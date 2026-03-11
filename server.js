@@ -14,12 +14,12 @@ app.use((req, res, next) => {
 });
 
 const { detectLanguage, t }                         = require("./lib/lang");
-const { catalog, getProductById, getProductsByCategory } = require("./lib/catalog");
+const { catalog, getProductById, getProductsByCategory, getCatalogText, getPrice } = require("./lib/catalog");
 const { getSession, saveSession }                   = require("./lib/session");
 const { getAIReply }                                = require("./lib/claude");
 const { buildPaymentMessage, generateOrderId }      = require("./lib/payment");
 const { saveOrder, confirmOrder, cancelOrder, updateOrder, getAllOrders, getStats } = require("./lib/orders");
-const { markRead, sendText, sendProductCard, sendMainMenu, sendCategoriesMenu, sendProductsMenu, sendButtons } = require("./lib/whatsapp");
+const { markRead, sendText, sendProductCard, sendMainMenu, sendCategoriesMenu, sendProductsMenu, sendButtons, sendListMenu } = require("./lib/whatsapp");
 
 const PORT         = process.env.PORT || 3000;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "phasalbazar2024";
@@ -37,7 +37,7 @@ app.get("/", (req, res) => res.json({ status: "Phasal Bazar Bot running 🌾" })
 // ── Admin API routes ──────────────────────────────────────────────────────────
 app.get("/admin/stats", adminAuth, async (req, res) => {
   try {
-    const stats = await getStats();
+    const stats = getStats();
     res.json(stats);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -47,8 +47,8 @@ app.get("/admin/stats", adminAuth, async (req, res) => {
 app.get("/admin/orders", adminAuth, async (req, res) => {
   try {
     const { status, search } = req.query;
-    const result = await getAllOrders({ status, search });
-    res.json(result?.documents || []);
+    const result = getAllOrders({ status, search });
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -61,7 +61,7 @@ app.patch("/admin/orders/:orderId", adminAuth, async (req, res) => {
     const updates = {};
     if (orderStatus)   updates.orderStatus   = orderStatus;
     if (paymentStatus) updates.paymentStatus = paymentStatus;
-    await updateOrder(orderId, updates);
+    updateOrder(orderId, updates);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -103,16 +103,41 @@ app.post("/webhook", async (req, res) => {
   } catch (err) { console.error("Webhook error:", err); }
 });
 
+// ── Language selection menu ───────────────────────────────────────────────────
+async function sendLanguageMenu(from) {
+  await sendListMenu(from, {
+    bodyText: "🌾 *Welcome to Phasal Bazar!*\n\nPlease choose your language:\nभाषा चुनें / மொழி தேர்வு / భాష ఎంచుకోండి",
+    buttonLabel: "Choose / चुनें",
+    sections: [{
+      title: "Language / भाषा",
+      rows: [
+        { id: "lang_en", title: "🇬🇧 English",           description: "Continue in English" },
+        { id: "lang_hi", title: "🇮🇳 हिंदी (Hindi)",      description: "हिंदी में जारी रखें" },
+        { id: "lang_ta", title: "🇮🇳 தமிழ் (Tamil)",      description: "தமிழில் தொடரவும்" },
+        { id: "lang_te", title: "🇮🇳 తెలుగు (Telugu)",    description: "తెలుగులో కొనసాగండి" },
+      ],
+    }],
+  });
+}
+
 // ── Text handler ──────────────────────────────────────────────────────────────
 async function handleTextMessage(from, session, text) {
-  const lang = detectLanguage(text);
-  if (lang !== session.lang) { saveSession(from, { lang }); session.lang = lang; }
 
+  // New customer — no language set yet → show language menu first
+  if (!session.lang || session.state === "new") {
+    saveSession(from, { state: "choosing_lang" });
+    await sendLanguageMenu(from);
+    return;
+  }
+
+  const { lang } = session;
   const lower = text.toLowerCase();
   const greetings = ["hi","hello","hey","start","menu"];
+
+  // Returning customer greeting → show main menu
   if (greetings.some(g => lower.includes(g)) || /^[\u0900-\u097F\u0B80-\u0BFF\u0C00-\u0C7F]/.test(text)) {
     await sendMainMenu(from, lang, k => t(lang, k));
-    saveSession(from, { lang, state: "browsing", messages: [] });
+    saveSession(from, { state: "browsing", messages: [] });
     return;
   }
 
@@ -126,6 +151,26 @@ async function handleTextMessage(from, session, text) {
 
 // ── Interactive reply handler ─────────────────────────────────────────────────
 async function handleInteractiveReply(from, session, replyId, replyTitle) {
+
+  // Language selection
+  if (replyId.startsWith("lang_")) {
+    const chosen = replyId.replace("lang_", ""); // en, hi, ta, te
+    saveSession(from, { lang: chosen, state: "browsing", messages: [] });
+    session.lang = chosen;
+
+    const welcome = {
+      en: "🎉 Great! You selected *English*.",
+      hi: "🎉 बढ़िया! आपने *हिंदी* चुनी।",
+      ta: "🎉 நன்று! நீங்கள் *தமிழ்* தேர்ந்தெடுத்தீர்கள்.",
+      te: "🎉 చాలా బాగుంది! మీరు *తెలుగు* ఎంచుకున్నారు.",
+    };
+    await sendText(from, welcome[chosen] || welcome.en);
+    // Now ask customer type
+    saveSession(from, { lang: chosen, state: "choosing_type", messages: [] });
+    await sendCustomerTypeMenu(from, chosen);
+    return;
+  }
+
   const { lang } = session;
   const ui = k => t(lang, k);
 
@@ -141,14 +186,14 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
     const cat      = catalog.categories.find(c => c.id === id);
     const name     = cat?.name[lang] || cat?.name.en || id;
     if (!products.length) { await sendText(from, "No products yet."); return; }
-    await sendProductsMenu(from, products, lang, name, ui);
+    await sendProductsMenu(from, products, lang, name, ui, session.customerType || "retail");
     return;
   }
 
   if (replyId.startsWith("product_")) {
     const product = getProductById(replyId.replace("product_", ""));
     if (!product) { await sendText(from, "Product not found."); return; }
-    await sendProductCard(from, product, lang);
+    await sendProductCard(from, product, lang, session.customerType || "retail");
     await sendButtons(from, {
       bodyText: lang === "hi" ? "Order karna chahte hain?" : "Would you like to order this?",
       buttons: [
@@ -163,6 +208,29 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
   if (replyId.startsWith("order_")) {
     const p = replyId.split("_");
     await initiateOrder(from, session, p[1], parseInt(p[2]||"1"));
+    return;
+  }
+
+  // Customer type selection
+  if (replyId === "type_retail" || replyId === "type_wholesale") {
+    const customerType = replyId === "type_retail" ? "retail" : "wholesale";
+    saveSession(from, { customerType, state: "browsing" });
+    const msg = {
+      retail: {
+        en: "🛒 *Retail prices (MRP)* selected. Here is our menu:",
+        hi: "🛒 *Retail prices (MRP)* चुनी। यह हमारा मेनू है:",
+        ta: "🛒 *சில்லறை விலை (MRP)* தேர்ந்தெடுக்கப்பட்டது:",
+        te: "🛒 *రిటైల్ ధరలు (MRP)* ఎంచుకున్నారు:",
+      },
+      wholesale: {
+        en: "🏪 *Wholesale prices* selected. Here is our menu:",
+        hi: "🏪 *Wholesale prices* चुनी। यह हमारा मेनू है:",
+        ta: "🏪 *மொத்த விலை* தேர்ந்தெடுக்கப்பட்டது:",
+        te: "🏪 *హోల్‌సేల్ ధరలు* ఎంచుకున్నారు:",
+      },
+    };
+    await sendText(from, msg[customerType][lang] || msg[customerType].en);
+    await sendMainMenu(from, lang, k => t(lang, k));
     return;
   }
 
@@ -191,8 +259,8 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
 // ── Order history ─────────────────────────────────────────────────────────────
 async function sendOrderHistory(from, session) {
   const { lang } = session;
-  const result = await getAllOrders({ search: from });
-  const orders = (result?.documents || []).slice(0, 5);
+  const result = getAllOrders({ search: from });
+  const orders = (Array.isArray(result) ? result : []).slice(0, 5);
   if (!orders.length) {
     await sendText(from, lang === "hi" ? "Aapka koi order nahi hai." : "You have no recent orders.");
     return;
@@ -207,17 +275,35 @@ async function sendOrderHistory(from, session) {
   await sendText(from, lines.join("\n"));
 }
 
+// ── Customer type menu ───────────────────────────────────────────────────────
+async function sendCustomerTypeMenu(from, lang) {
+  const ask = {
+    en: "Are you buying for personal use or wholesale?",
+    hi: "Aap personal use ke liye khareed rahe hain ya wholesale?",
+    ta: "நீங்கள் தனிப்பட்ட பயன்பாட்டிற்கா அல்லது மொத்தமாகவா வாங்குகிறீர்கள்?",
+    te: "మీరు వ్యక్తిగత వినియోగానికా లేదా హోల్‌సేల్‌కా కొనుగోలు చేస్తున్నారు?",
+  };
+  await sendButtons(from, {
+    bodyText: ask[lang] || ask.en,
+    buttons: [
+      { id: "type_retail",    title: "🛒 Retail (MRP)" },
+      { id: "type_wholesale", title: "🏪 Wholesale" },
+    ],
+  });
+}
+
 // ── Step 1: Ask payment method FIRST ─────────────────────────────────────────
 async function initiateOrder(from, session, productId, qty) {
-  const { lang } = session;
+  const { lang, customerType = "retail" } = session;
   const product  = getProductById(productId);
   if (!product)            { await sendText(from, "Product not found."); return; }
   if (product.stock < qty) { await sendText(from, t(lang, "out_of_stock")); return; }
 
-  const subtotal = product.price * qty;
+  const price    = getPrice(product, customerType);
+  const subtotal = price * qty;
   const orderId  = generateOrderId();
   const name     = product.name[lang] || product.name.en;
-  const cartItem = { id: productId, emoji: product.emoji, name, qty, subtotal };
+  const cartItem = { id: productId, emoji: product.emoji, name, qty, subtotal, price, customerType };
 
   saveSession(from, { state: "choosing_payment", cart: [cartItem], pendingOrder: { orderId, cartItem, total: subtotal } });
 
