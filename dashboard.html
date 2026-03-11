@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Phasal Bazar — Orders</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0F1A0F;color:#A8D5A2;font-family:Georgia,serif;min-height:100vh}
+
+  /* LOGIN */
+  #login{display:flex;align-items:center;justify-content:center;min-height:100vh}
+  .box{background:#1A2E1A;border:1px solid #2D4A2D;border-radius:16px;padding:44px 40px;width:340px;text-align:center;box-shadow:0 24px 80px rgba(0,0,0,.6)}
+  .box h1{font-size:21px;margin:12px 0 4px}
+  .box p{color:#4A7A4A;font-size:13px;margin-bottom:28px}
+  .box input{width:100%;background:#0F1A0F;border:1px solid #2D4A2D;border-radius:8px;padding:11px 14px;color:#A8D5A2;font-size:14px;outline:none;font-family:monospace;margin-bottom:10px}
+  .box button{width:100%;background:#2D6A2D;border:none;border-radius:8px;padding:12px;color:#A8D5A2;font-size:15px;font-weight:700;cursor:pointer}
+  .err{color:#F87171;font-size:12px;margin-bottom:10px}
+
+  /* DASHBOARD */
+  #app{display:none}
+  .hdr{background:#1A2E1A;border-bottom:1px solid #2D4A2D;padding:12px 24px;display:flex;justify-content:space-between;align-items:center}
+  .hdr h2{font-size:16px}
+  .hdr span{color:#4A7A4A;font-size:11px;display:block}
+  .hdr-right{display:flex;gap:8px;align-items:center}
+  .sync{color:#2D6A2D;font-size:11px}
+
+  .wrap{padding:20px 24px;max-width:1080px;margin:0 auto}
+
+  /* STATS */
+  .stats{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px}
+  .stat{background:#1A2E1A;border:1px solid #2D4A2D;border-radius:10px;padding:14px 18px;flex:1;min-width:110px}
+  .stat .i{font-size:22px;margin-bottom:6px}
+  .stat .v{font-size:24px;font-weight:800}
+  .stat .l{color:#4A7A4A;font-size:11px;margin-top:3px}
+  .stat .s{color:#2D6A2D;font-size:10px;margin-top:2px}
+
+  /* TOOLBAR */
+  .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px}
+  .pill{background:#1A2E1A;border:1px solid #2D4A2D;color:#4A7A4A;border-radius:20px;padding:4px 12px;font-size:12px;cursor:pointer}
+  .pill.on{background:#2D6A2D;border-color:#4A9A4A;color:#A8D5A2}
+  .search{flex:1;min-width:180px;background:#1A2E1A;border:1px solid #2D4A2D;border-radius:8px;padding:6px 12px;color:#A8D5A2;font-size:13px;outline:none}
+  .count{color:#2D6A2D;font-size:12px;margin-bottom:8px}
+
+  /* ORDER CARD */
+  .card{background:#1A2E1A;border:1px solid #2D4A2D;border-radius:10px;padding:14px 18px;margin-bottom:8px}
+  .card-top{display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between}
+  .oid{color:#A8D5A2;font-weight:700;font-family:monospace;font-size:13px}
+  .ph{color:#4A7A4A;font-size:12px;margin-top:2px}
+  .dt{color:#2D5A2D;font-size:11px;margin-top:1px}
+  .items-col{flex:1;padding:0 12px;min-width:140px}
+  .il{color:#7AAD7A;font-size:12px}
+  .ip{color:#A8D5A2;font-weight:600}
+  .right-col{text-align:right}
+  .total{color:#A8D5A2;font-weight:800;font-size:18px}
+  .badges{display:flex;gap:5px;justify-content:flex-end;flex-wrap:wrap;margin-top:5px}
+  .badge{display:inline-flex;align-items:center;gap:3px;border-radius:20px;padding:2px 9px;font-size:11px;font-weight:700}
+  .actions{margin-top:10px;display:flex;gap:6px;flex-wrap:wrap}
+  .abtn{border-radius:6px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer;border-width:1px;border-style:solid}
+
+  /* EMPTY */
+  .empty{text-align:center;padding:60px;color:#2D4A2D}
+  .empty div{font-size:40px;margin-bottom:10px}
+
+  /* BTN */
+  .btn{background:#1A2E1A;border:1px solid #2D4A2D;color:#A8D5A2;border-radius:7px;padding:5px 10px;cursor:pointer;font-size:12px;font-family:inherit}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login">
+  <div class="box">
+    <div style="font-size:48px">🌾</div>
+    <h1>Phasal Bazar</h1>
+    <p>Order Management Dashboard</p>
+    <input type="text" id="apiUrl" placeholder="Railway URL (https://...railway.app)" />
+    <input type="password" id="apiPass" placeholder="Admin password" onkeydown="if(event.key==='Enter')doLogin()" />
+    <div class="err" id="lerr"></div>
+    <button onclick="doLogin()">Login →</button>
+  </div>
+</div>
+
+<!-- DASHBOARD -->
+<div id="app">
+  <div class="hdr">
+    <div>
+      <h2>🌾 Phasal Bazar</h2>
+      <span>Order Dashboard</span>
+    </div>
+    <div class="hdr-right">
+      <span class="sync" id="syncTime"></span>
+      <button class="btn" onclick="load()">🔄 Refresh</button>
+      <button class="btn" onclick="logout()">Logout</button>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <div class="stats" id="stats"></div>
+    <div class="toolbar">
+      <div class="filters" id="filters"></div>
+      <input class="search" id="search" placeholder="🔍 Phone or Order ID..." oninput="renderOrders()" />
+    </div>
+    <div class="count" id="count"></div>
+    <div id="orders"></div>
+  </div>
+</div>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────────────────
+let API = "", TOKEN = "", allOrders = [], statsData = {}, activeFilter = "all";
+
+const STATUS = {
+  pending:   { label:"Pending",   color:"#F59E0B", bg:"#3D2E00", icon:"⏳" },
+  confirmed: { label:"Confirmed", color:"#10B981", bg:"#003D28", icon:"✅" },
+  delivered: { label:"Delivered", color:"#818CF8", bg:"#1E1B4B", icon:"📦" },
+  cancelled: { label:"Cancelled", color:"#F87171", bg:"#3D0000", icon:"❌" },
+};
+const PAYMENT = {
+  UPI: { color:"#C084FC", bg:"#2D1B4D", icon:"💳" },
+  COD: { color:"#FCD34D", bg:"#3D2A00", icon:"💵" },
+};
+const FILTERS = [
+  {id:"all", label:"All"},
+  {id:"pending", label:"⏳ Pending"},
+  {id:"confirmed", label:"✅ Confirmed"},
+  {id:"delivered", label:"📦 Delivered"},
+  {id:"cancelled", label:"❌ Cancelled"},
+];
+
+// ── Login ─────────────────────────────────────────────────────────────────────
+async function doLogin() {
+  const url  = document.getElementById("apiUrl").value.trim().replace(/\/$/, "");
+  const pass = document.getElementById("apiPass").value.trim();
+  if (!url || !pass) { showErr("Fill in both fields"); return; }
+
+  try {
+    const r = await fetch(`${url}/admin/stats`, { headers:{ Authorization:`Bearer ${pass}` }});
+    if (!r.ok) { showErr("Wrong password or server unreachable"); return; }
+    API = url; TOKEN = pass;
+    localStorage.setItem("pb_api", API);
+    localStorage.setItem("pb_token", TOKEN);
+    showDashboard();
+    load();
+  } catch(e) {
+    showErr("Cannot connect. Check Railway URL.");
+  }
+}
+
+function showErr(msg){ document.getElementById("lerr").textContent = "⚠️ " + msg; }
+
+function logout(){
+  localStorage.removeItem("pb_token");
+  document.getElementById("login").style.display = "flex";
+  document.getElementById("app").style.display = "none";
+}
+
+function showDashboard(){
+  document.getElementById("login").style.display = "none";
+  document.getElementById("app").style.display = "block";
+  buildFilters();
+}
+
+// ── Filters ───────────────────────────────────────────────────────────────────
+function buildFilters(){
+  document.getElementById("filters").innerHTML = FILTERS.map(f =>
+    `<button class="pill ${f.id===activeFilter?'on':''}" onclick="setFilter('${f.id}')">${f.label}</button>`
+  ).join("");
+}
+
+function setFilter(id){ activeFilter = id; buildFilters(); renderOrders(); }
+
+// ── Load data ─────────────────────────────────────────────────────────────────
+async function load(){
+  try {
+    const [oRes, sRes] = await Promise.all([
+      fetch(`${API}/admin/orders`, { headers:{ Authorization:`Bearer ${TOKEN}` }}),
+      fetch(`${API}/admin/stats`,  { headers:{ Authorization:`Bearer ${TOKEN}` }}),
+    ]);
+    allOrders  = await oRes.json();
+    statsData  = await sRes.json();
+    renderStats();
+    renderOrders();
+    document.getElementById("syncTime").textContent = "Synced " + new Date().toLocaleTimeString();
+  } catch(e) {
+    document.getElementById("syncTime").textContent = "⚠️ Load failed";
+  }
+}
+
+// Auto refresh every 30s
+setInterval(load, 30000);
+
+// ── Render stats ──────────────────────────────────────────────────────────────
+function renderStats(){
+  const s = statsData;
+  document.getElementById("stats").innerHTML = [
+    stat("📦","Total",      s.total),
+    stat("⏳","Pending",    s.pending),
+    stat("✅","Confirmed",  s.confirmed),
+    stat("🛵","Delivered",  s.delivered),
+    stat("💰","Revenue",    "₹"+(s.totalRevenue||0), "Today ₹"+(s.todayRevenue||0)),
+    stat("📅","Today",      s.todayOrders||0, `COD ${s.codOrders||0} · UPI ${s.upiOrders||0}`),
+  ].join("");
+}
+
+function stat(icon, label, val, sub=""){
+  return `<div class="stat"><div class="i">${icon}</div><div class="v">${val}</div><div class="l">${label}</div>${sub?`<div class="s">${sub}</div>`:""}</div>`;
+}
+
+// ── Render orders ─────────────────────────────────────────────────────────────
+function renderOrders(){
+  const search = document.getElementById("search").value.toLowerCase();
+  let list = allOrders;
+  if (activeFilter !== "all") list = list.filter(o => o.orderStatus === activeFilter);
+  if (search) list = list.filter(o =>
+    (o.orderId||"").toLowerCase().includes(search) ||
+    (o.customerPhone||"").includes(search)
+  );
+
+  document.getElementById("count").textContent = list.length + " order" + (list.length!==1?"s":"");
+
+  if (!list.length){
+    document.getElementById("orders").innerHTML = `<div class="empty"><div>📭</div>No orders found</div>`;
+    return;
+  }
+
+  document.getElementById("orders").innerHTML = list.map(o => orderCard(o)).join("");
+}
+
+function orderCard(o){
+  const s  = STATUS[o.orderStatus]   || STATUS.pending;
+  const p  = PAYMENT[o.paymentMethod] || PAYMENT.COD;
+  const items = Array.isArray(o.items) ? o.items : [];
+  const date  = o.createdAt ? new Date(o.createdAt).toLocaleString() : "";
+
+  const itemsHtml = items.map(i =>
+    `<div class="il">${i.emoji||""} ${i.name} ×${i.qty} — <span class="ip">₹${i.subtotal}</span></div>`
+  ).join("") || `<div class="il" style="color:#2D4A2D">No items</div>`;
+
+  const actions = o.orderStatus === "pending"
+    ? `<button class="abtn" style="color:#10B981;border-color:#10B981;background:#003D28" onclick="update('${o.orderId}','confirmed')">✅ Confirm</button>
+       <button class="abtn" style="color:#F87171;border-color:#F87171;background:#3D0000" onclick="update('${o.orderId}','cancelled')">❌ Cancel</button>`
+    : o.orderStatus === "confirmed"
+    ? `<button class="abtn" style="color:#818CF8;border-color:#818CF8;background:#1E1B4B" onclick="update('${o.orderId}','delivered')">📦 Delivered</button>`
+    : `<span style="color:#2D4A2D;font-size:12px">No actions</span>`;
+
+  return `
+  <div class="card">
+    <div class="card-top">
+      <div>
+        <div class="oid">${o.orderId}</div>
+        <div class="ph">📱 ${o.customerPhone}</div>
+        <div class="dt">${date}</div>
+      </div>
+      <div class="items-col">${itemsHtml}</div>
+      <div class="right-col">
+        <div class="total">₹${o.total}</div>
+        <div class="badges">
+          <span class="badge" style="color:${p.color};background:${p.bg}">${p.icon} ${o.paymentMethod}</span>
+          <span class="badge" style="color:${s.color};background:${s.bg}">${s.icon} ${s.label}</span>
+        </div>
+      </div>
+    </div>
+    <div class="actions">${actions}</div>
+  </div>`;
+}
+
+// ── Update order status ───────────────────────────────────────────────────────
+async function update(orderId, status){
+  try {
+    await fetch(`${API}/admin/orders/${orderId}`, {
+      method:"PATCH",
+      headers:{ Authorization:`Bearer ${TOKEN}`, "Content-Type":"application/json" },
+      body: JSON.stringify({ orderStatus: status }),
+    });
+    await load();
+  } catch(e){ alert("Update failed"); }
+}
+
+// ── Auto-login if saved ───────────────────────────────────────────────────────
+window.onload = function(){
+  const savedApi   = localStorage.getItem("pb_api");
+  const savedToken = localStorage.getItem("pb_token");
+  if (savedApi && savedToken) {
+    document.getElementById("apiUrl").value  = savedApi;
+    document.getElementById("apiPass").value = savedToken;
+    API = savedApi; TOKEN = savedToken;
+    showDashboard();
+    load();
+  }
+};
+</script>
+</body>
+</html>
