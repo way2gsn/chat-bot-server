@@ -125,56 +125,93 @@ async function sendLanguageMenu(from) {
 
 // ── Text handler ──────────────────────────────────────────────────────────────
 async function handleTextMessage(from, session, text) {
+  const { lang = "en" } = session;
+  const lower = text.trim().toLowerCase();
 
-  // New customer OR no language set → show language menu
+  // ── PRIORITY 1: Active order states (NEVER interrupted by greetings) ────────
+
+  // Awaiting delivery address
+  if (session.state === "awaiting_address") {
+    if (lower === "cancel") {
+      saveSession(from, { state: "idle", cart: [], pendingOrder: null, address: null });
+      const msg = { en: "❌ Order cancelled.", hi: "❌ Cancel ho gaya.", ta: "❌ ரத்து.", te: "❌ రద్దు." };
+      await sendText(from, msg[lang] || msg.en);
+      return;
+    }
+    if (text.trim().length < 5) {
+      const msg = { en: "Please send your full delivery address (street, area, city).", hi: "Kripya poora address bhejein (gali, area, shahar).", ta: "முழு முகவரி அனுப்பவும்.", te: "పూర్తి చిరునామా పంపండి." };
+      await sendText(from, msg[lang] || msg.en);
+      return;
+    }
+    saveSession(from, { address: text.trim() });
+    await sendFinalConfirmation(from, { ...session, address: text.trim() });
+    return;
+  }
+
+  // Awaiting CONFIRM or CANCEL
+  if (session.state === "awaiting_confirm") {
+    const confirms = ["confirm", "yes", "ok", "haan", "ha", "हां", "உறுதி", "సరే"];
+    const cancels  = ["cancel", "no", "nahi", "नहीं", "band", "nope"];
+    if (confirms.some(w => lower.includes(w))) {
+      await placeConfirmedOrder(from, session);
+      return;
+    }
+    if (cancels.some(w => lower.includes(w))) {
+      saveSession(from, { state: "idle", cart: [], pendingOrder: null, address: null });
+      const msg = { en: "❌ Order cancelled. Type *Hi* to start again.", hi: "❌ Order cancel. *Hi* likhein dobara shuru karne ke liye.", ta: "❌ ரத்து. மீண்டும் தொடங்க *Hi* என்று அனுப்பவும்.", te: "❌ రద్దు. మళ్ళీ ప్రారంభించడానికి *Hi* అని పంపండి." };
+      await sendText(from, msg[lang] || msg.en);
+      return;
+    }
+    // Not understood — remind clearly
+    const remind = {
+      en: "Reply *CONFIRM* ✅ to place order\nReply *CANCEL* ❌ to cancel",
+      hi: "*CONFIRM* likhein order ke liye\n*CANCEL* likhein cancel karne ke liye",
+      ta: "ஆர்டர் செய்ய *CONFIRM* ✅\nரத்து செய்ய *CANCEL* ❌",
+      te: "ఆర్డర్‌కు *CONFIRM* ✅\nరద్దుకు *CANCEL* ❌",
+    };
+    await sendText(from, remind[lang] || remind.en);
+    return;
+  }
+
+  // Awaiting payment screenshot
+  if (session.state === "awaiting_payment") {
+    const msg = {
+      en: "📸 Please send the *payment screenshot* to confirm your order, or type *CANCEL* to cancel.",
+      hi: "📸 Order confirm karne ke liye *payment screenshot* bhejein, ya *CANCEL* likhein.",
+      ta: "📸 ஆர்டர் உறுதிப்படுத்த *payment screenshot* அனுப்பவும்.",
+      te: "📸 ఆర్డర్ నిర్ధారించడానికి *payment screenshot* పంపండి.",
+    };
+    if (lower === "cancel") {
+      const { pendingOrder } = session;
+      if (pendingOrder) cancelOrder(pendingOrder.orderId);
+      saveSession(from, { state: "idle", cart: [], pendingOrder: null });
+      const cm = { en: "❌ Order cancelled.", hi: "❌ Cancel ho gaya.", ta: "❌ ரத்து.", te: "❌ రద్దు." };
+      await sendText(from, cm[lang] || cm.en);
+      return;
+    }
+    await sendText(from, msg[lang] || msg.en);
+    return;
+  }
+
+  // ── PRIORITY 2: New customer setup ─────────────────────────────────────────
+
   if (!session.lang || session.state === "new") {
     saveSession(from, { state: "choosing_lang" });
     await sendLanguageMenu(from);
     return;
   }
 
-  // Language chosen but customer type not yet selected
   if (!session.customerType || session.state === "choosing_type") {
-    await sendCustomerTypeMenu(from, session.lang);
+    await sendCustomerTypeMenu(from, lang);
     return;
   }
 
-  const { lang } = session;
-  const lower = text.toLowerCase();
-  const greetings = ["hi","hello","hey","start","menu"];
+  // ── PRIORITY 3: Normal browsing ─────────────────────────────────────────────
 
-  // Returning customer greeting → show main menu directly
-  if (greetings.some(g => lower.includes(g)) || /^[\u0900-\u097F\u0B80-\u0BFF\u0C00-\u0C7F]/.test(text)) {
+  const greetings = ["hi","hello","hey","start","menu","helo","hii"];
+  if (greetings.some(g => lower === g || lower.startsWith(g+" ")) || /^[\u0900-\u097F\u0B80-\u0BFF\u0C00-\u0C7F]/.test(text)) {
     await sendMainMenu(from, lang, k => t(lang, k));
     saveSession(from, { state: "browsing", messages: [] });
-    return;
-  }
-
-  // Awaiting delivery address
-  if (session.state === "awaiting_address") {
-    saveSession(from, { address: text });
-    await sendFinalConfirmation(from, { ...session, address: text });
-    return;
-  }
-
-  // Awaiting CONFIRM or CANCEL text
-  if (session.state === "awaiting_confirm") {
-    const word = text.trim().toLowerCase();
-    const confirms = ["confirm", "yes", "ok", "haan", "ha", "确认", "உறுதி", "సరే"];
-    const cancels  = ["cancel", "no", "nahi", "nope", "band"];
-    if (confirms.some(w => word.includes(w))) {
-      await placeConfirmedOrder(from, session);
-      return;
-    }
-    if (cancels.some(w => word.includes(w))) {
-      saveSession(from, { state: "idle", cart: [], pendingOrder: null, address: null });
-      const msg = { en: "❌ Order cancelled.", hi: "❌ Order cancel ho gaya.", ta: "❌ ஆர்டர் ரத்து.", te: "❌ ఆర్డర్ రద్దు." };
-      await sendText(from, msg[lang] || msg.en);
-      return;
-    }
-    // Didn't understand — remind
-    const remind = { en: "Please reply *CONFIRM* to place order or *CANCEL* to cancel.", hi: "Order place karne ke liye *CONFIRM* ya cancel karne ke liye *CANCEL* likhein.", ta: "ஆர்டர் செய்ய *CONFIRM* அல்லது ரத்து செய்ய *CANCEL* என்று பதில் அளிக்கவும்.", te: "ఆర్డర్ చేయడానికి *CONFIRM* లేదా రద్దు చేయడానికి *CANCEL* అని రిప్లై చేయండి." };
-    await sendText(from, remind[lang] || remind.en);
     return;
   }
 
