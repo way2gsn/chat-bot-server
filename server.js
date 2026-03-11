@@ -123,10 +123,16 @@ async function sendLanguageMenu(from) {
 // ── Text handler ──────────────────────────────────────────────────────────────
 async function handleTextMessage(from, session, text) {
 
-  // New customer — no language set yet → show language menu first
+  // New customer OR no language set → show language menu
   if (!session.lang || session.state === "new") {
     saveSession(from, { state: "choosing_lang" });
     await sendLanguageMenu(from);
+    return;
+  }
+
+  // Language chosen but customer type not yet selected
+  if (!session.customerType || session.state === "choosing_type") {
+    await sendCustomerTypeMenu(from, session.lang);
     return;
   }
 
@@ -134,7 +140,7 @@ async function handleTextMessage(from, session, text) {
   const lower = text.toLowerCase();
   const greetings = ["hi","hello","hey","start","menu"];
 
-  // Returning customer greeting → show main menu
+  // Returning customer greeting → show main menu directly
   if (greetings.some(g => lower.includes(g)) || /^[\u0900-\u097F\u0B80-\u0BFF\u0C00-\u0C7F]/.test(text)) {
     await sendMainMenu(from, lang, k => t(lang, k));
     saveSession(from, { state: "browsing", messages: [] });
@@ -214,6 +220,7 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
   // Customer type selection
   if (replyId === "type_retail" || replyId === "type_wholesale") {
     const customerType = replyId === "type_retail" ? "retail" : "wholesale";
+    const chosenLang = session.lang || "en";
     saveSession(from, { customerType, state: "browsing" });
     const msg = {
       retail: {
