@@ -100,23 +100,26 @@ app.post("/webhook", async (req, res) => {
     }
     if (msgType === "text")  { await handleTextMessage(from, session, msg.text.body.trim()); return; }
     if (msgType === "image") { await handlePaymentScreenshot(from, session); return; }
-  } catch (err) { console.error("Webhook error:", err); }
+  } catch (err) { console.error("Webhook error:", err.message, err.stack); }
 });
 
 // ── Language selection menu ───────────────────────────────────────────────────
 async function sendLanguageMenu(from) {
-  await sendListMenu(from, {
-    bodyText: "🌾 *Welcome to Phasal Bazar!*\n\nPlease choose your language:\nभाषा चुनें / மொழி தேர்வு / భాష ఎంచుకోండి",
-    buttonLabel: "Choose / चुनें",
-    sections: [{
-      title: "Language / भाषा",
-      rows: [
-        { id: "lang_en", title: "🇬🇧 English",           description: "Continue in English" },
-        { id: "lang_hi", title: "🇮🇳 हिंदी (Hindi)",      description: "हिंदी में जारी रखें" },
-        { id: "lang_ta", title: "🇮🇳 தமிழ் (Tamil)",      description: "தமிழில் தொடரவும்" },
-        { id: "lang_te", title: "🇮🇳 తెలుగు (Telugu)",    description: "తెలుగులో కొనసాగండి" },
-      ],
-    }],
+  // Use buttons instead of list — more reliable, no flag emoji issues
+  await sendButtons(from, {
+    bodyText: "🌾 *Welcome to Phasal Bazar!*\n\nPlease choose your language / भाषा चुनें:",
+    buttons: [
+      { id: "lang_en", title: "English" },
+      { id: "lang_hi", title: "हिंदी (Hindi)" },
+      { id: "lang_ta", title: "Tamil / தமிழ்" },
+    ],
+  });
+  // Send Telugu separately since buttons max is 3
+  await sendButtons(from, {
+    bodyText: "More languages / अधिक भाषाएं:",
+    buttons: [
+      { id: "lang_te", title: "Telugu / తెలుగు" },
+    ],
   });
 }
 
@@ -144,6 +147,34 @@ async function handleTextMessage(from, session, text) {
   if (greetings.some(g => lower.includes(g)) || /^[\u0900-\u097F\u0B80-\u0BFF\u0C00-\u0C7F]/.test(text)) {
     await sendMainMenu(from, lang, k => t(lang, k));
     saveSession(from, { state: "browsing", messages: [] });
+    return;
+  }
+
+  // Awaiting delivery address
+  if (session.state === "awaiting_address") {
+    saveSession(from, { address: text });
+    await sendFinalConfirmation(from, { ...session, address: text });
+    return;
+  }
+
+  // Awaiting CONFIRM or CANCEL text
+  if (session.state === "awaiting_confirm") {
+    const word = text.trim().toLowerCase();
+    const confirms = ["confirm", "yes", "ok", "haan", "ha", "确认", "உறுதி", "సరే"];
+    const cancels  = ["cancel", "no", "nahi", "nope", "band"];
+    if (confirms.some(w => word.includes(w))) {
+      await placeConfirmedOrder(from, session);
+      return;
+    }
+    if (cancels.some(w => word.includes(w))) {
+      saveSession(from, { state: "idle", cart: [], pendingOrder: null, address: null });
+      const msg = { en: "❌ Order cancelled.", hi: "❌ Order cancel ho gaya.", ta: "❌ ஆர்டர் ரத்து.", te: "❌ ఆర్డర్ రద్దు." };
+      await sendText(from, msg[lang] || msg.en);
+      return;
+    }
+    // Didn't understand — remind
+    const remind = { en: "Please reply *CONFIRM* to place order or *CANCEL* to cancel.", hi: "Order place karne ke liye *CONFIRM* ya cancel karne ke liye *CANCEL* likhein.", ta: "ஆர்டர் செய்ய *CONFIRM* அல்லது ரத்து செய்ய *CANCEL* என்று பதில் அளிக்கவும்.", te: "ఆర్డర్ చేయడానికి *CONFIRM* లేదా రద్దు చేయడానికి *CANCEL* అని రిప్లై చేయండి." };
+    await sendText(from, remind[lang] || remind.en);
     return;
   }
 
@@ -243,12 +274,10 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
 
   if (replyId === "pay_upi") {
     await showSummaryThenPay(from, session, "UPI");
-    await handleUPIPayment(from, session);
     return;
   }
   if (replyId === "pay_cod") {
     await showSummaryThenPay(from, session, "COD");
-    await handleCODPayment(from, session);
     return;
   }
   if (replyId === "pay_cancel") {
@@ -331,19 +360,116 @@ async function initiateOrder(from, session, productId, qty) {
   });
 }
 
-// ── Step 2: Show order summary then proceed ───────────────────────────────────
+// ── Step 2: After payment chosen → ask delivery address ──────────────────────
 async function showSummaryThenPay(from, session, paymentMethod) {
-  const { lang, pendingOrder } = session;
-  if (!pendingOrder) { await sendText(from, "No pending order found."); return; }
+  const { lang } = session;
+  // Save payment method to session
+  saveSession(from, { chosenPayment: paymentMethod, state: "awaiting_address" });
+
+  const ask = {
+    en: `📍 *Almost there!*\n\nPlease send your *delivery address* so we can deliver your order.`,
+    hi: `📍 *Bas thoda aur!*\n\nApna *delivery address* bhejein taaki hum aapka order deliver kar sakein.`,
+    ta: `📍 *கிட்டத்தட்ட முடிந்தது!*\n\nடெலிவரிக்காக உங்கள் *முகவரி* அனுப்பவும்.`,
+    te: `📍 *దాదాపు అయిపోయింది!*\n\nమీ *డెలివరీ చిరునామా* పంపించండి.`,
+  };
+  await sendText(from, ask[lang] || ask.en);
+}
+
+// ── Step 3: Show final summary + ask CONFIRM ──────────────────────────────────
+async function sendFinalConfirmation(from, session) {
+  const { lang, pendingOrder, chosenPayment, address } = session;
+  if (!pendingOrder) { await sendText(from, "No pending order."); return; }
   const { cartItem, total } = pendingOrder;
 
+  const ptype = session.customerType === "wholesale" ? "🏪 Wholesale" : "🛒 Retail";
+
   const summary = {
-    en: `🧾 *Order Summary*\n─────────────────\n${cartItem.emoji} ${cartItem.name} × ${cartItem.qty}\n💰 Total: ₹${total}\n💳 Payment: ${paymentMethod}\n─────────────────`,
-    hi: `🧾 *Order Summary*\n─────────────────\n${cartItem.emoji} ${cartItem.name} × ${cartItem.qty}\n💰 Total: ₹${total}\n💳 Payment: ${paymentMethod}\n─────────────────`,
-    ta: `🧾 *Order Summary*\n─────────────────\n${cartItem.emoji} ${cartItem.name} × ${cartItem.qty}\n💰 மொத்தம்: ₹${total}\n💳 Payment: ${paymentMethod}\n─────────────────`,
-    te: `🧾 *Order Summary*\n─────────────────\n${cartItem.emoji} ${cartItem.name} × ${cartItem.qty}\n💰 మొత్తం: ₹${total}\n💳 Payment: ${paymentMethod}\n─────────────────`,
+    en: `🧾 *Final Order Summary*
+─────────────────────
+${cartItem.emoji} *${cartItem.name}*
+   Qty: ${cartItem.qty}  |  Price: ₹${cartItem.price} each
+   Subtotal: ₹${total}
+─────────────────────
+💳 Payment: *${chosenPayment}*
+🏷️ Type: ${ptype}
+📍 Deliver to: ${address}
+─────────────────────
+Reply *CONFIRM* to place your order
+Reply *CANCEL* to cancel`,
+
+    hi: `🧾 *Final Order Summary*
+─────────────────────
+${cartItem.emoji} *${cartItem.name}*
+   Qty: ${cartItem.qty}  |  Price: ₹${cartItem.price} each
+   Subtotal: ₹${total}
+─────────────────────
+💳 Payment: *${chosenPayment}*
+🏷️ Type: ${ptype}
+📍 Pata: ${address}
+─────────────────────
+Order karne ke liye *CONFIRM* likhein
+Cancel karne ke liye *CANCEL* likhein`,
+
+    ta: `🧾 *இறுதி ஆர்டர் விவரம்*
+─────────────────────
+${cartItem.emoji} *${cartItem.name}*
+   Qty: ${cartItem.qty}  |  விலை: ₹${cartItem.price}
+   மொத்தம்: ₹${total}
+─────────────────────
+💳 கட்டணம்: *${chosenPayment}*
+📍 முகவரி: ${address}
+─────────────────────
+ஆர்டர் செய்ய *CONFIRM* என்று பதில் அளிக்கவும்`,
+
+    te: `🧾 *తుది ఆర్డర్ వివరాలు*
+─────────────────────
+${cartItem.emoji} *${cartItem.name}*
+   Qty: ${cartItem.qty}  |  ధర: ₹${cartItem.price}
+   మొత్తం: ₹${total}
+─────────────────────
+💳 చెల్లింపు: *${chosenPayment}*
+📍 చిరునామా: ${address}
+─────────────────────
+ఆర్డర్ చేయడానికి *CONFIRM* అని రిప్లై చేయండి`,
   };
+
+  saveSession(from, { state: "awaiting_confirm" });
   await sendText(from, summary[lang] || summary.en);
+}
+
+// ── Step 4: Place order after CONFIRM ────────────────────────────────────────
+async function placeConfirmedOrder(from, session) {
+  const { lang, pendingOrder, chosenPayment, address } = session;
+  if (!pendingOrder) { await sendText(from, "No pending order."); return; }
+  const { orderId, cartItem, total } = pendingOrder;
+
+  await saveOrder({
+    orderId,
+    customerPhone: from,
+    items: [cartItem],
+    total,
+    paymentMethod: chosenPayment,
+    address,
+    lang,
+    customerType: session.customerType || "retail",
+  });
+
+  if (chosenPayment === "UPI") {
+    saveSession(from, { state: "awaiting_payment" });
+    await sendText(from, buildPaymentMessage({ lang, items: [cartItem], total, orderId }));
+    const msg = { en: "📸 Now send the payment screenshot to confirm your order.", hi: "📸 Ab payment screenshot bhejein.", ta: "📸 இப்போது payment screenshot அனுப்பவும்.", te: "📸 ఇప్పుడు payment screenshot పంపండి." };
+    await sendText(from, msg[lang] || msg.en);
+  } else {
+    // COD — done!
+    saveSession(from, { state: "idle", cart: [], pendingOrder: null, address: null });
+    const msg = {
+      en: `✅ *Order Confirmed!*\n\nOrder ID: *${orderId}*\nTotal: ₹${total}\nPayment: Cash on Delivery\nAddress: ${address}\n\nWe will deliver soon! 🚚`,
+      hi: `✅ *Order Confirm Ho Gaya!*\n\nOrder ID: *${orderId}*\nTotal: ₹${total}\nPayment: Cash on Delivery\nPata: ${address}\n\nHum jaldi deliver karenge! 🚚`,
+      ta: `✅ *ஆர்டர் உறுதிப்பட்டது!*\n\nOrder ID: *${orderId}*\nமொத்தம்: ₹${total}\nDelivery விரைவில் வரும்! 🚚`,
+      te: `✅ *ఆర్డర్ నిర్ధారించబడింది!*\n\nOrder ID: *${orderId}*\nమొత్తం: ₹${total}\nDelivery త్వరలో వస్తుంది! 🚚`,
+    };
+    await sendText(from, msg[lang] || msg.en);
+  }
 }
 
 // ── UPI Payment ───────────────────────────────────────────────────────────────

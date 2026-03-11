@@ -228,39 +228,61 @@ function renderOrders(){
 }
 
 function orderCard(o){
-  const s  = STATUS[o.orderStatus]   || STATUS.pending;
-  const p  = PAYMENT[o.paymentMethod] || PAYMENT.COD;
-  const items = Array.isArray(o.items) ? o.items : [];
-  const date  = o.createdAt ? new Date(o.createdAt).toLocaleString() : "";
+  const s = STATUS[o.orderStatus]    || STATUS.pending;
+  const p = PAYMENT[o.paymentMethod] || PAYMENT.COD;
+  const date = o.createdAt ? new Date(o.createdAt).toLocaleString() : "";
 
-  const itemsHtml = items.map(i =>
-    `<div class="il">${i.emoji||""} ${i.name} ×${i.qty} — <span class="ip">₹${i.subtotal}</span></div>`
-  ).join("") || `<div class="il" style="color:#2D4A2D">No items</div>`;
+  // Handle items stored as array or JSON string
+  let items = [];
+  if (Array.isArray(o.items)) {
+    items = o.items;
+  } else if (typeof o.items === "string") {
+    try { items = JSON.parse(o.items); } catch { items = []; }
+  }
+
+  const itemsHtml = items.length
+    ? items.map(i => `
+        <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #1A3A1A">
+          <span style="color:#7AAD7A;font-size:13px">${i.emoji||"🌾"} ${i.name} × ${i.qty}</span>
+          <span style="color:#A8D5A2;font-weight:700;font-size:13px">₹${i.subtotal}</span>
+        </div>`).join("")
+    : `<div style="color:#2D4A2D;font-size:12px;padding:4px 0">No item details</div>`;
 
   const actions = o.orderStatus === "pending"
-    ? `<button class="abtn" style="color:#10B981;border-color:#10B981;background:#003D28" onclick="update('${o.orderId}','confirmed')">✅ Confirm</button>
+    ? `<button class="abtn" style="color:#10B981;border-color:#10B981;background:#003D28" onclick="update('${o.orderId}','confirmed')">✅ Confirm Order</button>
        <button class="abtn" style="color:#F87171;border-color:#F87171;background:#3D0000" onclick="update('${o.orderId}','cancelled')">❌ Cancel</button>`
     : o.orderStatus === "confirmed"
-    ? `<button class="abtn" style="color:#818CF8;border-color:#818CF8;background:#1E1B4B" onclick="update('${o.orderId}','delivered')">📦 Delivered</button>`
-    : `<span style="color:#2D4A2D;font-size:12px">No actions</span>`;
+    ? `<button class="abtn" style="color:#818CF8;border-color:#818CF8;background:#1E1B4B" onclick="update('${o.orderId}','delivered')">📦 Mark Delivered</button>`
+    : `<span style="color:#2D4A2D;font-size:12px">—</span>`;
 
   return `
   <div class="card">
-    <div class="card-top">
+    <!-- Row 1: Order ID + badges + total -->
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:10px">
       <div>
         <div class="oid">${o.orderId}</div>
         <div class="ph">📱 ${o.customerPhone}</div>
-        <div class="dt">${date}</div>
+        <div class="dt">🕐 ${date}</div>
       </div>
-      <div class="items-col">${itemsHtml}</div>
-      <div class="right-col">
-        <div class="total">₹${o.total}</div>
-        <div class="badges">
+      <div style="text-align:right">
+        <div style="color:#A8D5A2;font-weight:800;font-size:22px">₹${o.total}</div>
+        <div style="display:flex;gap:5px;justify-content:flex-end;margin-top:5px;flex-wrap:wrap">
           <span class="badge" style="color:${p.color};background:${p.bg}">${p.icon} ${o.paymentMethod}</span>
           <span class="badge" style="color:${s.color};background:${s.bg}">${s.icon} ${s.label}</span>
         </div>
       </div>
     </div>
+    <!-- Row 2: Items list -->
+    <div style="background:#0F1A0F;border-radius:6px;padding:8px 10px;margin-bottom:8px">
+      <div style="color:#4A7A4A;font-size:11px;margin-bottom:4px;text-transform:uppercase;letter-spacing:1px">Items Ordered</div>
+      ${itemsHtml}
+    </div>
+    <!-- Row 2b: Address -->
+    ${o.address ? `<div style="background:#0F1A0F;border-radius:6px;padding:7px 10px;margin-bottom:8px;font-size:12px">
+      <span style="color:#4A7A4A;text-transform:uppercase;letter-spacing:1px;font-size:11px">📍 Delivery Address  </span>
+      <span style="color:#A8D5A2">${o.address}</span>
+    </div>` : ""}
+    <!-- Row 3: Actions -->
     <div class="actions">${actions}</div>
   </div>`;
 }
