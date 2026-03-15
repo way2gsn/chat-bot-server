@@ -37,7 +37,7 @@ app.get("/", (req, res) => res.json({ status: "Phasal Bazar Bot running 🌾" })
 // ── Admin API routes ──────────────────────────────────────────────────────────
 app.get("/admin/stats", adminAuth, async (req, res) => {
   try {
-    const stats = getStats();
+    const stats = await getStats();
     res.json(stats);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -47,7 +47,7 @@ app.get("/admin/stats", adminAuth, async (req, res) => {
 app.get("/admin/orders", adminAuth, async (req, res) => {
   try {
     const { status, search } = req.query;
-    const result = getAllOrders({ status, search });
+    const result = await getAllOrders({ status, search });
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -61,7 +61,7 @@ app.patch("/admin/orders/:orderId", adminAuth, async (req, res) => {
     const updates = {};
     if (orderStatus)   updates.orderStatus   = orderStatus;
     if (paymentStatus) updates.paymentStatus = paymentStatus;
-    updateOrder(orderId, updates);
+    await updateOrder(orderId, updates);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -173,6 +173,37 @@ async function handleTextMessage(from, session, text) {
     return;
   }
 
+  // Awaiting PAID confirmation after screenshot
+  if (session.state === "awaiting_paid_confirm") {
+    const word = text.trim().toLowerCase();
+    if (word === "paid") {
+      const { pendingOrder } = session;
+      if (pendingOrder) {
+        confirmOrder(pendingOrder.orderId);
+        const msg = {
+          en: `✅ *Payment Confirmed!*\nOrder *${pendingOrder.orderId}* placed 🎉\nDelivery in 2-3 days. Thank you! 🌾`,
+          hi: `✅ *Payment Confirm!*\nOrder *${pendingOrder.orderId}* place ho gaya 🎉\n2-3 din mein delivery. Dhanyavaad! 🌾`,
+          ta: `✅ *Payment உறுதி!*\nOrder *${pendingOrder.orderId}* 🎉\n2-3 நாட்களில் டெலிவரி. நன்றி! 🌾`,
+          te: `✅ *Payment నిర్ధారణ!*\nOrder *${pendingOrder.orderId}* 🎉\n2-3 రోజుల్లో డెలివరీ. ధన్యవాదాలు! 🌾`,
+        };
+        await sendText(from, msg[lang] || msg.en);
+        saveSession(from, { state: "idle", cart: [], pendingOrder: null, address: null });
+      }
+      return;
+    }
+    if (word === "cancel") {
+      const { pendingOrder } = session;
+      if (pendingOrder) cancelOrder(pendingOrder.orderId);
+      saveSession(from, { state: "idle", cart: [], pendingOrder: null, address: null });
+      const msg = { en: "❌ Order cancelled.", hi: "❌ Cancel ho gaya.", ta: "❌ ரத்து.", te: "❌ రద్దు." };
+      await sendText(from, msg[lang] || msg.en);
+      return;
+    }
+    const remind = { en: "Please type *PAID* to confirm or *CANCEL* to cancel.", hi: "*PAID* ya *CANCEL* likhein.", ta: "*PAID* அல்லது *CANCEL* என்று அனுப்பவும்.", te: "*PAID* లేదా *CANCEL* అని టైప్ చేయండి." };
+    await sendText(from, remind[lang] || remind.en);
+    return;
+  }
+
   // Awaiting payment screenshot
   if (session.state === "awaiting_payment") {
     const msg = {
@@ -268,12 +299,100 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
     const product = getProductById(replyId.replace("product_", ""));
     if (!product) { await sendText(from, "Product not found."); return; }
     await sendProductCard(from, product, lang, session.customerType || "retail");
+    const cart = session.cart || [];
+    const cartLabel = cart.length > 0
+      ? (lang === "hi" ? `🛒 Cart (${cart.length})` : `🛒 Cart (${cart.length})`)
+      : (lang === "hi" ? "🛒 Cart (0)" : "🛒 Cart (0)");
     await sendButtons(from, {
-      bodyText: lang === "hi" ? "Order karna chahte hain?" : "Would you like to order this?",
+      bodyText: lang === "hi" ? "Kya karna chahte hain?" : "What would you like to do?",
       buttons: [
-        { id: `order_${product.id}_1`, title: "Order 1" },
-        { id: `order_${product.id}_2`, title: "Order 2" },
-        { id: "action_shop",           title: "Back" },
+        { id: `addcart_${product.id}`, title: "🛒 Add to Cart" },
+        { id: `order_${product.id}_1`, title: "⚡ Order Now (1)" },
+        { id: "view_cart",             title: cartLabel },
+      ],
+    });
+    return;
+  }
+
+  // Add to cart
+  if (replyId.startsWith("addcart_")) {
+    const productId = replyId.replace("addcart_", "");
+    const product   = getProductById(productId);
+    if (!product) { await sendText(from, "Product not found."); return; }
+    const cart  = session.cart || [];
+    const existing = cart.find(i => i.id === productId);
+    const price = getPrice(product, session.customerType || "retail");
+    if (existing) {
+      existing.qty++;
+      existing.subtotal = existing.qty * price;
+    } else {
+      cart.push({ id: productId, emoji: product.emoji, name: product.name[lang]||product.name.en, qty: 1, subtotal: price, price });
+    }
+    saveSession(from, { cart });
+    const total = cart.reduce((s, i) => s + i.subtotal, 0);
+    const added = { en: `✅ Added! Cart: ${cart.length} item(s) — ₹${total}`, hi: `✅ Add ho gaya! Cart: ${cart.length} item — ₹${total}`, ta: `✅ சேர்க்கப்பட்டது! Cart: ${cart.length} — ₹${total}`, te: `✅ జోడించబడింది! Cart: ${cart.length} — ₹${total}` };
+    await sendButtons(from, {
+      bodyText: added[lang] || added.en,
+      buttons: [
+        { id: "action_shop",    title: "➕ Add More" },
+        { id: "view_cart",      title: "🛒 View Cart" },
+        { id: "checkout_cart",  title: "✅ Checkout" },
+      ],
+    });
+    return;
+  }
+
+  // View cart
+  if (replyId === "view_cart") {
+    const cart = session.cart || [];
+    if (!cart.length) {
+      const msg = { en: "🛒 Your cart is empty. Browse products to add items.", hi: "🛒 Cart khali hai.", ta: "🛒 Cart காலியாக உள்ளது.", te: "🛒 Cart ఖాళీగా ఉంది." };
+      await sendText(from, msg[lang] || msg.en);
+      return;
+    }
+    const total = cart.reduce((s, i) => s + i.subtotal, 0);
+    const lines = cart.map(i => `${i.emoji} ${i.name} x${i.qty} = Rs.${i.subtotal}`).join("\n");
+    const sep = "─────────────────";
+    const summaryText = `🛒 *Your Cart*\n${sep}\n${lines}\n${sep}\n💰 Total: Rs.${total}`;
+    const summary = { en: summaryText, hi: summaryText, ta: summaryText, te: summaryText };
+    await sendText(from, summary[lang] || summary.en);
+    await sendButtons(from, {
+      bodyText: lang === "hi" ? "Aage kya karein?" : "What next?",
+      buttons: [
+        { id: "checkout_cart", title: "✅ Checkout" },
+        { id: "clear_cart",    title: "🗑️ Clear Cart" },
+        { id: "action_shop",   title: "➕ Add More" },
+      ],
+    });
+    return;
+  }
+
+  // Clear cart
+  if (replyId === "clear_cart") {
+    saveSession(from, { cart: [] });
+    const msg = { en: "🗑️ Cart cleared.", hi: "🗑️ Cart saaf ho gaya.", ta: "🗑️ Cart அழிக்கப்பட்டது.", te: "🗑️ Cart క్లియర్ అయింది." };
+    await sendText(from, msg[lang] || msg.en);
+    return;
+  }
+
+  // Checkout cart
+  if (replyId === "checkout_cart") {
+    const cart = session.cart || [];
+    if (!cart.length) {
+      const msg = { en: "🛒 Cart is empty.", hi: "Cart khali hai.", ta: "Cart காலியாக உள்ளது.", te: "Cart ఖాళీగా ఉంది." };
+      await sendText(from, msg[lang] || msg.en);
+      return;
+    }
+    const total   = cart.reduce((s, i) => s + i.subtotal, 0);
+    const orderId = generateOrderId();
+    saveSession(from, { state: "choosing_payment", pendingOrder: { orderId, cartItem: cart[0], items: cart, total } });
+    const ask = { en: "How would you like to pay?", hi: "Kaise payment karein?", ta: "எப்படி பணம் செலுத்த விரும்புகிறீர்கள்?", te: "ఎలా చెల్లించాలనుకుంటున్నారు?" };
+    await sendButtons(from, {
+      bodyText: ask[lang] || ask.en,
+      buttons: [
+        { id: "pay_upi",    title: "💳 UPI / PhonePe" },
+        { id: "pay_cod",    title: "💵 Cash on Delivery" },
+        { id: "pay_cancel", title: "❌ Cancel" },
       ],
     });
     return;
@@ -480,10 +599,11 @@ async function placeConfirmedOrder(from, session) {
   if (!pendingOrder) { await sendText(from, "No pending order."); return; }
   const { orderId, cartItem, total } = pendingOrder;
 
+  const items = pendingOrder.items || [cartItem];
   await saveOrder({
     orderId,
     customerPhone: from,
-    items: [cartItem],
+    items,
     total,
     paymentMethod: chosenPayment,
     address,
@@ -540,17 +660,19 @@ async function handleCODPayment(from, session) {
 // ── Payment screenshot ────────────────────────────────────────────────────────
 async function handlePaymentScreenshot(from, session) {
   const { lang, pendingOrder } = session;
-  if (session.state === "awaiting_payment" && pendingOrder) {
-    await confirmOrder(pendingOrder.orderId);
-    const msg = {
-      en: `✅ *Payment received!*\nOrder *${pendingOrder.orderId}* confirmed 🎉\nDelivery in 2-3 days. Thank you! 🌾`,
-      hi: `✅ *Payment mil gaya!*\nOrder *${pendingOrder.orderId}* confirm 🎉\n2-3 din mein delivery. Dhanyavaad! 🌾`,
-      ta: `✅ *பணம் கிடைத்தது!*\nOrder *${pendingOrder.orderId}* உறுதி 🎉\n2-3 நாட்களில் டெலிவரி. நன்றி! 🌾`,
-      te: `✅ *చెల్లింపు అందింది!*\nOrder *${pendingOrder.orderId}* నిర్ధారణ 🎉\n2-3 రోజుల్లో డెలివరీ. ధన్యవాదాలు! 🌾`,
-    };
-    await sendText(from, msg[lang] || msg.en);
-    saveSession(from, { state: "idle", cart: [], pendingOrder: null });
+  if (session.state !== "awaiting_payment" || !pendingOrder) {
+    // Random image sent — ignore silently
+    return;
   }
+  // Screenshot received — now require PAID confirmation
+  saveSession(from, { state: "awaiting_paid_confirm" });
+  const msg = {
+    en: `📸 *Screenshot received!*\n\nPlease type *PAID* to confirm your payment.\nType *CANCEL* if you want to cancel.`,
+    hi: `📸 *Screenshot mil gaya!*\n\nPayment confirm karne ke liye *PAID* likhein.\nCancel karne ke liye *CANCEL* likhein.`,
+    ta: `📸 *Screenshot கிடைத்தது!*\n\nஉறுதிப்படுத்த *PAID* என்று அனுப்பவும்.\nரத்து செய்ய *CANCEL* அனுப்பவும்.`,
+    te: `📸 *Screenshot వచ్చింది!*\n\nనిర్ధారించడానికి *PAID* అని టైప్ చేయండి.\nరద్దు చేయడానికి *CANCEL* అని టైప్ చేయండి.`,
+  };
+  await sendText(from, msg[lang] || msg.en);
 }
 
 app.listen(PORT, () => console.log(`🌾 Phasal Bazar Bot running on port ${PORT}`));
