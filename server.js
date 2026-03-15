@@ -173,6 +173,20 @@ async function handleTextMessage(from, session, text) {
     return;
   }
 
+  // Awaiting quantity input for wholesale cart
+  if (session.state === "awaiting_qty") {
+    const qty = parseInt(text.trim());
+    if (isNaN(qty) || qty < 1) {
+      const msg = { en: "Please send a valid number (e.g. 5, 10, 50)", hi: "Kripya ek valid number likhein (jaise 5, 10, 50)", ta: "சரியான எண் அனுப்பவும் (எ.கா. 5, 10, 50)", te: "సరైన సంఖ్య పంపండి (ఉదా. 5, 10, 50)" };
+      await sendText(from, msg[lang] || msg.en);
+      return;
+    }
+    const productId = session.pendingCartProduct;
+    if (!productId) { saveSession(from, { state: "browsing" }); return; }
+    await addToCart(from, session, productId, qty, lang);
+    return;
+  }
+
   // Awaiting PAID confirmation after screenshot
   if (session.state === "awaiting_paid_confirm") {
     const word = text.trim().toLowerCase();
@@ -314,31 +328,31 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
     return;
   }
 
-  // Add to cart
+  // Add to cart — ask quantity for wholesale, default 1 for retail
   if (replyId.startsWith("addcart_")) {
     const productId = replyId.replace("addcart_", "");
     const product   = getProductById(productId);
     if (!product) { await sendText(from, "Product not found."); return; }
-    const cart  = session.cart || [];
-    const existing = cart.find(i => i.id === productId);
-    const price = getPrice(product, session.customerType || "retail");
-    if (existing) {
-      existing.qty++;
-      existing.subtotal = existing.qty * price;
-    } else {
-      cart.push({ id: productId, emoji: product.emoji, name: product.name[lang]||product.name.en, qty: 1, subtotal: price, price });
+
+    const isWholesale = session.customerType === "wholesale";
+
+    if (isWholesale) {
+      // Save pending product and ask quantity
+      saveSession(from, { state: "awaiting_qty", pendingCartProduct: productId });
+      const price = getPrice(product, "wholesale");
+      const name  = product.name[lang] || product.name.en;
+      const ask = {
+        en: `${product.emoji} *${name}*\nPrice: ₹${price} per ${product.unit}\n\nHow many units do you want?\nReply with a number (e.g. 5, 10, 50)`,
+        hi: `${product.emoji} *${name}*\nPrice: ₹${price} per ${product.unit}\n\nKitni quantity chahiye?\nNumber likhein (jaise 5, 10, 50)`,
+        ta: `${product.emoji} *${name}*\nவிலை: ₹${price}\n\nஎத்தனை வேண்டும்? எண் அனுப்பவும்`,
+        te: `${product.emoji} *${name}*\nధర: ₹${price}\n\nఎన్ని కావాలి? సంఖ్య పంపండి`,
+      };
+      await sendText(from, ask[lang] || ask.en);
+      return;
     }
-    saveSession(from, { cart });
-    const total = cart.reduce((s, i) => s + i.subtotal, 0);
-    const added = { en: `✅ Added! Cart: ${cart.length} item(s) — ₹${total}`, hi: `✅ Add ho gaya! Cart: ${cart.length} item — ₹${total}`, ta: `✅ சேர்க்கப்பட்டது! Cart: ${cart.length} — ₹${total}`, te: `✅ జోడించబడింది! Cart: ${cart.length} — ₹${total}` };
-    await sendButtons(from, {
-      bodyText: added[lang] || added.en,
-      buttons: [
-        { id: "action_shop",    title: "➕ Add More" },
-        { id: "view_cart",      title: "🛒 View Cart" },
-        { id: "checkout_cart",  title: "✅ Checkout" },
-      ],
-    });
+
+    // Retail — just add 1
+    await addToCart(from, session, productId, 1, lang);
     return;
   }
 
@@ -480,6 +494,38 @@ async function sendCustomerTypeMenu(from, lang) {
     buttons: [
       { id: "type_retail",    title: "🛒 Retail (MRP)" },
       { id: "type_wholesale", title: "🏪 Wholesale" },
+    ],
+  });
+}
+
+// ── Add to cart helper ───────────────────────────────────────────────────────
+async function addToCart(from, session, productId, qty, lang) {
+  const product  = getProductById(productId);
+  if (!product) return;
+  const cart     = session.cart || [];
+  const price    = getPrice(product, session.customerType || "retail");
+  const existing = cart.find(i => i.id === productId);
+  if (existing) {
+    existing.qty      += qty;
+    existing.subtotal  = existing.qty * price;
+  } else {
+    cart.push({ id: productId, emoji: product.emoji, name: product.name[lang]||product.name.en, qty, subtotal: qty * price, price });
+  }
+  saveSession(from, { cart, state: "browsing", pendingCartProduct: null });
+  const total = cart.reduce((s, i) => s + i.subtotal, 0);
+  const totalItems = cart.reduce((s, i) => s + i.qty, 0);
+  const added = {
+    en: `✅ *Added ${qty} × ${product.name.en}*\n\nCart: ${cart.length} product(s), ${totalItems} units — ₹${total}`,
+    hi: `✅ *${qty} × ${product.name.en} add ho gaya*\n\nCart: ${cart.length} product, ${totalItems} units — ₹${total}`,
+    ta: `✅ *${qty} × ${product.name.en} சேர்க்கப்பட்டது*\n\nCart: ${cart.length} — ₹${total}`,
+    te: `✅ *${qty} × ${product.name.en} జోడించబడింది*\n\nCart: ${cart.length} — ₹${total}`,
+  };
+  await sendButtons(from, {
+    bodyText: added[lang] || added.en,
+    buttons: [
+      { id: "action_shop",   title: "➕ Add More" },
+      { id: "view_cart",     title: `🛒 Cart (${cart.length})` },
+      { id: "checkout_cart", title: "✅ Checkout" },
     ],
   });
 }
