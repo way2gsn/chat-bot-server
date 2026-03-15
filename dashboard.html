@@ -354,7 +354,11 @@ function buildFilters() {
 
 function setFilter(id) { activeFilter=id; buildFilters(); renderOrders(); }
 
+let isLoading = false;
 async function load() {
+  if (isLoading) return;
+  isLoading = true;
+  document.getElementById("syncTime").textContent = "Loading...";
   try {
     const [oRes, sRes] = await Promise.all([
       fetch(`${API}/admin/orders`, { headers:{ Authorization:`Bearer ${TOKEN}` }}),
@@ -366,9 +370,11 @@ async function load() {
     document.getElementById("syncTime").textContent = "Synced " + new Date().toLocaleTimeString();
   } catch(e) {
     document.getElementById("syncTime").textContent = "⚠️ Failed";
+  } finally {
+    isLoading = false;
   }
 }
-setInterval(load, 30000);
+// No auto-refresh — manual only via Refresh button
 
 function renderStats() {
   const s = statsData;
