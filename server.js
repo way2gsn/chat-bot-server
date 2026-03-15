@@ -17,8 +17,9 @@ const { detectLanguage, t }                         = require("./lib/lang");
 const { catalog, getProductById, getProductsByCategory, getCatalogText, getPrice } = require("./lib/catalog");
 const { getSession, saveSession }                   = require("./lib/session");
 const { getAIReply }                                = require("./lib/claude");
-const { buildPaymentMessage, generateOrderId }      = require("./lib/payment");
+const { buildPaymentMessage, generateOrderId } = require("./lib/payment");
 const { saveOrder, confirmOrder, cancelOrder, updateOrder, getAllOrders, getStats } = require("./lib/orders");
+const { getUser, saveUser, getUserAddress, getAllUsers } = require("./lib/users");
 const { markRead, sendText, sendProductCard, sendMainMenu, sendCategoriesMenu, sendProductsMenu, sendButtons, sendListMenu } = require("./lib/whatsapp");
 
 const PORT         = process.env.PORT || 3000;
@@ -52,6 +53,10 @@ app.get("/admin/orders", adminAuth, async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+app.get("/admin/users", adminAuth, (req, res) => {
+  res.json(getAllUsers());
 });
 
 app.patch("/admin/orders/:orderId", adminAuth, async (req, res) => {
@@ -143,8 +148,26 @@ async function handleTextMessage(from, session, text) {
       await sendText(from, msg[lang] || msg.en);
       return;
     }
-    saveSession(from, { address: text.trim() });
-    await sendFinalConfirmation(from, { ...session, address: text.trim() });
+    const newAddress = text.trim();
+    // Save address to user profile permanently
+    saveUser(from, { address: newAddress, lang, customerType: session.customerType });
+    saveSession(from, { address: newAddress });
+    await sendFinalConfirmation(from, { ...session, address: newAddress });
+    return;
+  }
+
+  // Using saved address confirmation
+  if (session.state === "confirm_saved_address") {
+    if (lower === "yes" || lower === "y" || lower === "haan" || lower === "ha") {
+      const savedAddress = getUserAddress(from);
+      saveSession(from, { address: savedAddress, state: "awaiting_confirm" });
+      await sendFinalConfirmation(from, { ...session, address: savedAddress });
+      return;
+    }
+    // No — ask for new address
+    saveSession(from, { state: "awaiting_address" });
+    const msg = { en: "📍 Please send your new delivery address:", hi: "📍 Naya delivery address bhejein:", ta: "📍 புதிய முகவரி அனுப்பவும்:", te: "📍 కొత్త చిరునామా పంపండి:" };
+    await sendText(from, msg[lang] || msg.en);
     return;
   }
 
@@ -286,6 +309,7 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
     await sendText(from, welcome[chosen] || welcome.en);
     // Now ask customer type
     saveSession(from, { lang: chosen, state: "choosing_type", messages: [] });
+    saveUser(from, { lang: chosen });
     await sendCustomerTypeMenu(from, chosen);
     return;
   }
@@ -418,11 +442,26 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
     return;
   }
 
+  // Saved address buttons
+  if (replyId === "use_saved_address") {
+    const savedAddress = getUserAddress(from);
+    saveSession(from, { address: savedAddress, state: "awaiting_confirm" });
+    await sendFinalConfirmation(from, { ...session, address: savedAddress });
+    return;
+  }
+  if (replyId === "new_address") {
+    saveSession(from, { state: "awaiting_address" });
+    const msg = { en: "📍 Please send your new delivery address:", hi: "📍 Naya address bhejein:", ta: "📍 புதிய முகவரி அனுப்பவும்:", te: "📍 కొత్త చిరునామా పంపండి:" };
+    await sendText(from, msg[lang] || msg.en);
+    return;
+  }
+
   // Customer type selection
   if (replyId === "type_retail" || replyId === "type_wholesale") {
     const customerType = replyId === "type_retail" ? "retail" : "wholesale";
     const chosenLang = session.lang || "en";
     saveSession(from, { customerType, state: "browsing" });
+    saveUser(from, { customerType, lang: chosenLang });
     const msg = {
       retail: {
         en: "🛒 *Retail prices (MRP)* selected. Here is our menu:",
@@ -562,17 +601,40 @@ async function initiateOrder(from, session, productId, qty) {
   });
 }
 
-// ── Step 2: After payment chosen → ask delivery address ──────────────────────
+// ── Step 2: After payment chosen → check saved address or ask ────────────────
 async function showSummaryThenPay(from, session, paymentMethod) {
   const { lang } = session;
-  // Save payment method to session
-  saveSession(from, { chosenPayment: paymentMethod, state: "awaiting_address" });
+  saveSession(from, { chosenPayment: paymentMethod });
 
+  // Check if user has a saved address
+  const savedAddress = getUserAddress(from);
+
+  if (savedAddress) {
+    // Ask if they want to use saved address
+    saveSession(from, { state: "confirm_saved_address" });
+    const ask = {
+      en: `📍 *Delivery Address*\n\nUse your saved address?\n*"${savedAddress}"*\n\nReply *YES* to use it or *NO* to enter a new one.`,
+      hi: `📍 *Delivery Address*\n\nKya aap apna purana address use karna chahte hain?\n*"${savedAddress}"*\n\n*YES* likhein use karne ke liye ya *NO* naya address ke liye.`,
+      ta: `📍 *Delivery Address*\n\nசேமித்த முகவரி பயன்படுத்தவா?\n*"${savedAddress}"*\n\n*YES* அல்லது *NO* அனுப்பவும்.`,
+      te: `📍 *Delivery Address*\n\nసేవ్ చేసిన చిరునామా వాడాలా?\n*"${savedAddress}"*\n\n*YES* లేదా *NO* పంపండి.`,
+    };
+    await sendButtons(from, {
+      bodyText: ask[lang] || ask.en,
+      buttons: [
+        { id: "use_saved_address", title: "✅ Yes, use this" },
+        { id: "new_address",       title: "📝 Enter new one" },
+      ],
+    });
+    return;
+  }
+
+  // No saved address — ask fresh
+  saveSession(from, { state: "awaiting_address" });
   const ask = {
-    en: `📍 *Almost there!*\n\nPlease send your *delivery address* so we can deliver your order.`,
-    hi: `📍 *Bas thoda aur!*\n\nApna *delivery address* bhejein taaki hum aapka order deliver kar sakein.`,
-    ta: `📍 *கிட்டத்தட்ட முடிந்தது!*\n\nடெலிவரிக்காக உங்கள் *முகவரி* அனுப்பவும்.`,
-    te: `📍 *దాదాపు అయిపోయింది!*\n\nమీ *డెలివరీ చిరునామా* పంపించండి.`,
+    en: `📍 *Almost there!*\n\nPlease send your *delivery address* (street, area, city).`,
+    hi: `📍 *Bas thoda aur!*\n\nApna *delivery address* bhejein (gali, area, shahar).`,
+    ta: `📍 *கிட்டத்தட்ட முடிந்தது!*\n\nஉங்கள் *முகவரி* அனுப்பவும் (தெரு, பகுதி, நகரம்).`,
+    te: `📍 *దాదాపు అయిపోయింది!*\n\nమీ *డెలివరీ చిరునామా* పంపండి (వీధి, ప్రాంతం, నగరం).`,
   };
   await sendText(from, ask[lang] || ask.en);
 }
@@ -659,9 +721,12 @@ async function placeConfirmedOrder(from, session) {
 
   if (chosenPayment === "UPI") {
     saveSession(from, { state: "awaiting_payment" });
-    await sendText(from, buildPaymentMessage({ lang, items: [cartItem], total, orderId }));
-    const msg = { en: "📸 Now send the payment screenshot to confirm your order.", hi: "📸 Ab payment screenshot bhejein.", ta: "📸 இப்போது payment screenshot அனுப்பவும்.", te: "📸 ఇప్పుడు payment screenshot పంపండి." };
-    await sendText(from, msg[lang] || msg.en);
+    await sendText(from, buildPaymentMessage({ lang, items, total, orderId }));
+    // Send QR code if manually configured in Railway env vars
+    if (process.env.UPI_QR_IMAGE_URL) {
+      const qrCaption = { en: "📱 *Scan to pay instantly*", hi: "📱 *Scan karke pay karein*", ta: "📱 *Scan செய்து pay செய்யவும்*", te: "📱 *Scan చేసి pay చేయండి*" };
+      await sendImage(from, process.env.UPI_QR_IMAGE_URL, qrCaption[lang] || qrCaption.en);
+    }
   } else {
     // COD — done!
     saveSession(from, { state: "idle", cart: [], pendingOrder: null, address: null });
