@@ -314,38 +314,9 @@ async function handleTextMessage(from, session, text) {
   const isNewCustomer = !session.lang || session.state === "new";
 
   if (isGreeting || isNewCustomer) {
+    // Send welcome + main menu exactly like old bot
     saveSession(from, { state: "browsing", lang: lang || "en", customerType: session.customerType || "retail", messages: [] });
-    // Send Flow interactive message (works within 24hr window)
-    try {
-      await sendFlow(from, {
-        flowId:     FLOW_SHOPPING,
-        headerText: "🌾 Phasal Bazar",
-        bodyText:   "Shop fresh farm products — Millets, Oils, Dals and more!\nPure Natural Desi",
-        footerText: "Tap below to start shopping",
-        buttonText: "Start Shopping",
-        screenName: "WELCOME",
-      });
-      return;
-    } catch(e) {
-      console.error("Flow send failed:", e.message);
-    }
-    // Fallback to simple welcome text
-    const welcome = {
-      en: "🌾 *Welcome to Phasal Bazar!*\n\nShop fresh farm products — Millets, Oils, Dals and more!\n\nTap the shop icon at the top right to browse our catalog!",
-      hi: "🌾 *Phasal Bazar mein swagat!*\n\nTaaza farm products!\n\nCatalog ke liye upar right icon tap karein!",
-      ta: "🌾 *Phasal Bazar!*\n\nதாஜா பொருட்கள்!\n\nமேலே icon தட்டவும்!",
-      te: "🌾 *Phasal Bazar!*\n\nతాజా ఉత్పత్తులు!\n\nపైన icon నొక్కండి!",
-    };
-    await sendText(from, welcome[lang] || welcome.en);
-    return;
-    if (isNewCustomer) {
-      saveSession(from, { state: "choosing_lang" });
-      await sendLanguageMenu(from);
-      return;
-    }
-    // Fallback to text menu for returning customers
-    await sendMainMenu(from, lang, k => t(lang, k));
-    saveSession(from, { state: "browsing", messages: [] });
+    await sendMainMenu(from, lang || "en", k => t(lang || "en", k));
     return;
   }
 
