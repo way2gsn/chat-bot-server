@@ -18,9 +18,13 @@ const { catalog, getProductById, getProductsByCategory, getCatalogText, getPrice
 const { getSession, saveSession }                   = require("./lib/session");
 const { getAIReply }                                = require("./lib/claude");
 const { buildPaymentMessage, generateOrderId } = require("./lib/payment");
+
+// ── WhatsApp Flow IDs ─────────────────────────────────────────────────────────
+const FLOW_SHOPPING = process.env.FLOW_SHOPPING_ID || "1926551408029255";
+const FLOW_SUPPORT  = process.env.FLOW_SUPPORT_ID  || "1933182807315833";
 const { saveOrder, confirmOrder, cancelOrder, updateOrder, getAllOrders, getStats } = require("./lib/orders");
 const { getUser, saveUser, getUserAddress, getAllUsers } = require("./lib/users");
-const { markRead, sendText, sendProductCard, sendMainMenu, sendCategoriesMenu, sendProductsMenu, sendButtons, sendListMenu } = require("./lib/whatsapp");
+const { markRead, sendText, sendProductCard, sendMainMenu, sendCategoriesMenu, sendProductsMenu, sendButtons, sendListMenu, sendFlow } = require("./lib/whatsapp");
 
 const PORT         = process.env.PORT || 3000;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "phasalbazar2024";
@@ -57,6 +61,30 @@ app.get("/admin/orders", adminAuth, async (req, res) => {
 
 app.get("/admin/users", adminAuth, (req, res) => {
   res.json(getAllUsers());
+});
+
+// ── Broadcast API ─────────────────────────────────────────────────────────────
+app.post("/admin/broadcast", adminAuth, async (req, res) => {
+  const { message, phones } = req.body;
+  if (!message || !phones || !phones.length) {
+    return res.status(400).json({ error: "message and phones required" });
+  }
+
+  const results = { sent: 0, failed: 0, errors: [] };
+
+  for (const phone of phones) {
+    try {
+      await sendText(phone, message);
+      results.sent++;
+      // Small delay to avoid rate limiting
+      await new Promise(r => setTimeout(r, 500));
+    } catch (err) {
+      results.failed++;
+      results.errors.push({ phone, error: err.message });
+    }
+  }
+
+  res.json(results);
 });
 
 app.patch("/admin/orders/:orderId", adminAuth, async (req, res) => {
@@ -104,6 +132,9 @@ app.post("/webhook", async (req, res) => {
       return;
     }
     if (msgType === "text")  { await handleTextMessage(from, session, msg.text.body.trim()); return; }
+    if (msgType === "interactive" && msg.interactive?.type === "nfm_reply") {
+      await handleFlowResponse(from, session, msg.interactive.nfm_reply); return;
+    }
     if (msgType === "image") { await handlePaymentScreenshot(from, session); return; }
   } catch (err) { console.error("Webhook error:", err.message, err.stack); }
 });
@@ -278,7 +309,18 @@ async function handleTextMessage(from, session, text) {
 
   const greetings = ["hi","hello","hey","start","menu","helo","hii"];
   if (greetings.some(g => lower === g || lower.startsWith(g+" ")) || /^[\u0900-\u097F\u0B80-\u0BFF\u0C00-\u0C7F]/.test(text)) {
-    await sendMainMenu(from, lang, k => t(lang, k));
+    if (FLOW_SHOPPING) {
+      await sendFlow(from, {
+        flowId:     FLOW_SHOPPING,
+        headerText: "🌾 Phasal Bazar",
+        bodyText:   "Shop fresh farm products — Millets, Oils, Dals and more!",
+        footerText: "Pure • Natural • Desi",
+        buttonText: "🛒 Start Shopping",
+        screenName: "WELCOME",
+      });
+    } else {
+      await sendMainMenu(from, lang, k => t(lang, k));
+    }
     saveSession(from, { state: "browsing", messages: [] });
     return;
   }
@@ -320,7 +362,21 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
   if (replyId === "action_shop" || replyId === "action_categories") {
     await sendCategoriesMenu(from, catalog.categories, lang, ui); return;
   }
-  if (replyId === "action_support") { await sendText(from, ui("support_msg")); return; }
+  if (replyId === "action_support") {
+    if (FLOW_SUPPORT) {
+      await sendFlow(from, {
+        flowId:     FLOW_SUPPORT,
+        headerText: "🙋 Customer Support",
+        bodyText:   "We are here to help! Available Mon-Sat, 9AM-6PM.",
+        footerText: "Phasal Bazar Support",
+        buttonText: "Contact Support",
+        screenName: "SUPPORT_MENU",
+      });
+    } else {
+      await sendText(from, ui("support_msg"));
+    }
+    return;
+  }
   if (replyId === "action_orders")  { await sendOrderHistory(from, session); return; }
 
   if (replyId.startsWith("cat_")) {
@@ -784,6 +840,84 @@ async function handlePaymentScreenshot(from, session) {
     te: `📸 *Screenshot వచ్చింది!*\n\nనిర్ధారించడానికి *PAID* అని టైప్ చేయండి.\nరద్దు చేయడానికి *CANCEL* అని టైప్ చేయండి.`,
   };
   await sendText(from, msg[lang] || msg.en);
+}
+
+// ── Flow response handler ─────────────────────────────────────────────────────
+async function handleFlowResponse(from, session, nfmReply) {
+  const { lang = "en" } = session;
+  let data = {};
+  try { data = JSON.parse(nfmReply.response_json); } catch {}
+
+  console.log("Flow response from", from, ":", data);
+
+  // Shopping flow completed
+  if (data.customer_name && data.order_details && data.address) {
+    const orderId = generateOrderId();
+    const customerType = data.customer_type || "retail";
+    const paymentMethod = data.payment_method || "COD";
+
+    // Save order
+    await saveOrder({
+      orderId,
+      customerPhone: from,
+      items: [{ name: data.order_details, qty: 1, subtotal: 0, emoji: "🌾" }],
+      total: 0,
+      paymentMethod,
+      address: data.address,
+      lang,
+      customerType,
+    });
+
+    // Save user profile
+    saveUser(from, { address: data.address, customerType, lang });
+
+    const msg = {
+      en: `✅ *Order Received!*
+
+Order ID: *${orderId}*
+Name: ${data.customer_name}
+Items: ${data.order_details}
+Address: ${data.address}
+Payment: ${paymentMethod}
+
+We will confirm your order shortly! 🚚`,
+      hi: `✅ *Order Mil Gaya!*
+
+Order ID: *${orderId}*
+Naam: ${data.customer_name}
+Items: ${data.order_details}
+Pata: ${data.address}
+Payment: ${paymentMethod}
+
+Hum jaldi confirm karenge! 🚚`,
+    };
+    await sendText(from, msg[lang] || msg.en);
+
+    if (paymentMethod === "UPI") {
+      await sendText(from, buildPaymentMessage({ lang, items: [{ name: data.order_details, qty: 1, subtotal: 0, emoji: "🌾" }], total: 0, orderId }));
+    }
+    return;
+  }
+
+  // Support flow completed
+  if (data.message && data.support_type) {
+    const msg = {
+      en: `✅ Support request received!
+
+Type: ${data.support_type}
+Message: ${data.message}
+
+Our team will contact you within 2-4 hours. 📞`,
+      hi: `✅ Support request mil gaya!
+
+Hamari team 2-4 ghante mein contact karegi. 📞`,
+    };
+    await sendText(from, msg[lang] || msg.en);
+    return;
+  }
+
+  // Generic flow completion
+  await sendText(from, lang === "hi" ? "✅ Dhanyavaad! Hum aapko jaldi contact karenge." : "✅ Thank you! We will contact you shortly.");
 }
 
 app.listen(PORT, () => console.log(`🌾 Phasal Bazar Bot running on port ${PORT}`));
