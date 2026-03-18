@@ -363,10 +363,10 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
   if (replyId === "action_shop") {
     // Send catalog link exactly like old bot
     const catalogMsg = {
-      en: "Click on the view catalog button to explore products https://wa.me/c/917771000404",
-      hi: "Products dekhne ke liye catalog button click karein https://wa.me/c/917771000404",
-      ta: "பொருட்கள் பார்க்க catalog button click செய்யவும் https://wa.me/c/917771000404",
-      te: "ఉత్పత్తులు చూడటానికి catalog button click చేయండి https://wa.me/c/917771000404",
+      en: "Click on the view catalog button to explore products https://wa.me/c/917771012123",
+      hi: "Products dekhne ke liye catalog button click karein https://wa.me/c/917771012123",
+      ta: "பொருட்கள் பார்க்க catalog button click செய்யவும் https://wa.me/c/917771012123",
+      te: "ఉత్పత్తులు చూడటానికి catalog button click చేయండి https://wa.me/c/917771012123",
     };
     await sendText(from, catalogMsg[lang] || catalogMsg.en);
     // Also send catalog as native WhatsApp message
