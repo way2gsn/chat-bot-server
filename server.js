@@ -24,7 +24,7 @@ const FLOW_SHOPPING = process.env.FLOW_SHOPPING_ID || "1926551408029255";
 const FLOW_SUPPORT  = process.env.FLOW_SUPPORT_ID  || "1933182807315833";
 const { saveOrder, confirmOrder, cancelOrder, updateOrder, getAllOrders, getStats } = require("./lib/orders");
 const { getUser, saveUser, getUserAddress, getAllUsers } = require("./lib/users");
-const { markRead, sendText, sendProductCard, sendMainMenu, sendCategoriesMenu, sendProductsMenu, sendButtons, sendListMenu, sendFlow } = require("./lib/whatsapp");
+const { markRead, sendText, sendProductCard, sendMainMenu, sendCategoriesMenu, sendProductsMenu, sendButtons, sendListMenu, sendFlow, sendFlowTemplate } = require("./lib/whatsapp");
 
 const PORT         = process.env.PORT || 3000;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "phasalbazar2024";
@@ -309,17 +309,20 @@ async function handleTextMessage(from, session, text) {
 
   const greetings = ["hi","hello","hey","start","menu","helo","hii"];
   if (greetings.some(g => lower === g || lower.startsWith(g+" ")) || /^[\u0900-\u097F\u0B80-\u0BFF\u0C00-\u0C7F]/.test(text)) {
+    // Send Flow via approved template — works for all users
     if (FLOW_SHOPPING) {
-      await sendFlow(from, {
-        flowId:     FLOW_SHOPPING,
-        headerText: "🌾 Phasal Bazar",
-        bodyText:   "Shop fresh farm products — Millets, Oils, Dals and more!",
-        footerText: "Pure • Natural • Desi",
-        buttonText: "🛒 Start Shopping",
-        screenName: "WELCOME",
-      });
-      saveSession(from, { state: "browsing", messages: [] });
-      return;
+      try {
+        await sendFlowTemplate(from, {
+          templateName: "phasal_bazar_shopping",
+          language:     "en",
+          flowId:       FLOW_SHOPPING,
+          screenName:   "WELCOME",
+        });
+        saveSession(from, { state: "browsing", messages: [] });
+        return;
+      } catch (flowErr) {
+        console.log("Flow template failed, falling back to text menu:", flowErr.message);
+      }
     }
     await sendMainMenu(from, lang, k => t(lang, k));
     saveSession(from, { state: "browsing", messages: [] });
