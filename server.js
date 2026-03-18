@@ -389,7 +389,20 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
   const { lang } = session;
   const ui = k => t(lang, k);
 
-  if (replyId === "action_shop" || replyId === "action_categories") {
+  if (replyId === "action_shop") {
+    // Send catalog link exactly like old bot
+    const catalogMsg = {
+      en: "Click on the view catalog button to explore products https://wa.me/c/917771000404",
+      hi: "Products dekhne ke liye catalog button click karein https://wa.me/c/917771000404",
+      ta: "பொருட்கள் பார்க்க catalog button click செய்யவும் https://wa.me/c/917771000404",
+      te: "ఉత్పత్తులు చూడటానికి catalog button click చేయండి https://wa.me/c/917771000404",
+    };
+    await sendText(from, catalogMsg[lang] || catalogMsg.en);
+    // Also send catalog as native WhatsApp message
+    await sendCatalogLink(from, lang);
+    return;
+  }
+  if (replyId === "action_categories") {
     await sendCategoriesMenu(from, catalog.categories, lang, ui); return;
   }
   if (replyId === "action_support") {
@@ -567,6 +580,29 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
     return;
   }
 
+  // Native cart order confirmed by customer
+  if (replyId === "place_cart_order") {
+    const { pendingOrder } = session;
+    if (!pendingOrder) { await sendText(from, "No order found."); return; }
+    // Ask for address using WhatsApp native address flow
+    saveSession(from, { chosenPayment: "COD", state: "awaiting_address" });
+    const askAddr = {
+      en: "Thanks for your order! Tell us what address you'd like this order delivered to.",
+      hi: "Order ke liye shukriya! Delivery address batayein.",
+      ta: "ஆர்டருக்கு நன்றி! டெலிவரி முகவரி சொல்லுங்கள்.",
+      te: "ఆర్డర్‌కు ధన్యవాదాలు! డెలివరీ చిరునామా చెప్పండి.",
+    };
+    await sendButtons(from, {
+      bodyText: askAddr[lang] || askAddr.en,
+      buttons: [
+        { id: "pay_cod", title: "Cash on Delivery" },
+        { id: "pay_upi", title: "UPI/Net-Banking/Card" },
+        { id: "pay_cancel", title: "Cancel" },
+      ],
+    });
+    return;
+  }
+
   if (replyId === "pay_upi") {
     await showSummaryThenPay(from, session, "UPI");
     return;
@@ -581,6 +617,31 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
     saveSession(from, { state: "idle", cart: [], pendingOrder: null });
     const msg = { en: "❌ Order cancelled.", hi: "❌ Order cancel ho gaya.", ta: "❌ ஆர்டர் ரத்து.", te: "❌ ఆర్డర్ రద్దు." };
     await sendText(from, msg[lang] || msg.en);
+    return;
+  }
+
+  // Rate order
+  if (replyId === "rate_order" || replyId.startsWith("rate_order_")) {
+    await sendListMenu(from, {
+      bodyText: "Order Rating\n\nPlease select the rating.\n\nYour feedback fuels our service enhancement.",
+      buttonLabel: "Select Rating",
+      sections: [{
+        title: "Rating",
+        rows: [
+          { id: "rating_5", title: "😎😎😎😎😎 Excellent", description: "5 Stars" },
+          { id: "rating_4", title: "😊😊😊😊 Good",       description: "4 Stars" },
+          { id: "rating_3", title: "😐😐😐 Average",      description: "3 Stars" },
+          { id: "rating_2", title: "😞😞 Poor",            description: "2 Stars" },
+          { id: "rating_1", title: "😡 Very Poor",         description: "1 Star" },
+        ],
+      }],
+    });
+    return;
+  }
+  if (replyId.startsWith("rating_")) {
+    const rating = replyId.replace("rating_","");
+    const stars = { "5":"😎😎😎😎😎 Excellent","4":"😊😊😊😊 Good","3":"😐😐😐 Average","2":"😞😞 Poor","1":"😡 Very Poor" };
+    await sendText(from, "Thank you for rating this order " + (rating === "5" ? "😊" : "🙏"));
     return;
   }
 
@@ -814,15 +875,31 @@ async function placeConfirmedOrder(from, session) {
       await sendImage(from, process.env.UPI_QR_IMAGE_URL, qrCaption[lang] || qrCaption.en);
     }
   } else {
-    // COD — done!
+    // COD — done! Show confirmation like old bot
     saveSession(from, { state: "idle", cart: [], pendingOrder: null, address: null });
-    const msg = {
-      en: `✅ *Order Confirmed!*\n\nOrder ID: *${orderId}*\nTotal: ₹${total}\nPayment: Cash on Delivery\nAddress: ${address}\n\nWe will deliver soon! 🚚`,
-      hi: `✅ *Order Confirm Ho Gaya!*\n\nOrder ID: *${orderId}*\nTotal: ₹${total}\nPayment: Cash on Delivery\nPata: ${address}\n\nHum jaldi deliver karenge! 🚚`,
-      ta: `✅ *ஆர்டர் உறுதிப்பட்டது!*\n\nOrder ID: *${orderId}*\nமொத்தம்: ₹${total}\nDelivery விரைவில் வரும்! 🚚`,
-      te: `✅ *ఆర్డర్ నిర్ధారించబడింది!*\n\nOrder ID: *${orderId}*\nమొత్తం: ₹${total}\nDelivery త్వరలో వస్తుంది! 🚚`,
-    };
-    await sendText(from, msg[lang] || msg.en);
+    const orderDate = new Date().toLocaleString("en-IN", { day:"2-digit", month:"2-digit", year:"numeric", hour:"2-digit", minute:"2-digit" });
+    const confirmMsg = "🎉 *Thank you for placing your order!* 🎊\n\n" +
+      "🛒 *Order Details:*\n" +
+      "────────────────────────────────────\n" +
+      "*Order ID*: " + orderId + "\n" +
+      "*Order Value*: Rs. " + total + "\n" +
+      "*Order Date*: " + orderDate + "\n" +
+      "*Order Status*: Processing\n\n" +
+      "🚚 *Shipment Details:*\n" +
+      "────────────────────────────────────\n" +
+      "*Address*: " + address + "\n" +
+      "*Payment*: " + chosenPayment + "\n\n" +
+      "We will update you once the order is shipped.";
+    if (process.env.THANKYOU_IMAGE_URL) {
+      await sendImage(from, process.env.THANKYOU_IMAGE_URL, "Thank you for shopping with Phasal Bazar! Pure Natural Desi");
+    }
+    await sendButtons(from, {
+      bodyText: confirmMsg,
+      buttons: [
+        { id: "rate_order", title: "Rate this order" },
+        { id: "action_support", title: "Contact support" },
+      ],
+    });
   }
 }
 
@@ -1045,22 +1122,17 @@ async function handleNativeOrder(from, session, order) {
   // Save user profile
   saveUser(from, { lang, customerType: session.customerType || "retail" });
 
-  const itemLines = items.map(function(i) { return i.emoji + " " + i.name + " x" + i.qty + " = Rs." + i.subtotal; }).join("\n");
-  const msg = {
-    en: "🛒 *Order received!*\n\n" + itemLines + "\n\n💰 Total: Rs." + total + "\n\nPlease send your *delivery address* to complete the order.\n(or type CANCEL)",
-    hi: "🛒 *Order mil gaya!*\n\n" + itemLines + "\n\n💰 Total: Rs." + total + "\n\nAddress bhejein.",
-    ta: "🛒 *ஆர்டர்!*\n\nமொத்தம்: Rs." + total + "\n\nமுகவரி அனுப்பவும்.",
-    te: "🛒 *ఆర్డర్!*\n\nమొత్తం: Rs." + total + "\n\nచిరునామా పంపండి.",
-  };
-  await sendText(from, msg[lang] || msg.en);
-
-  // Also ask payment method
+  // Show order details exactly like old bot
+  const sep = "─────────────────────────────────────────────";
+  const itemLines = items.map(function(item, idx) {
+    return (idx+1) + ". *Product Name*: " + item.name + ", Qty: x " + item.qty + ", Price: Rs. " + item.price;
+  }).join("\n");
+  const orderSummary = "🛒 *Your Order Details*\n" + sep + "\n" + itemLines + "\n" + sep + "\n*Grand Total*: Rs. " + total;
   await sendButtons(from, {
-    bodyText: lang === "hi" ? "Payment method chunein:" : "Choose payment method:",
+    bodyText: orderSummary,
     buttons: [
-      { id: "pay_upi", title: "💳 UPI / PhonePe" },
-      { id: "pay_cod", title: "💵 Cash on Delivery" },
-      { id: "pay_cancel", title: "❌ Cancel" },
+      { id: "place_cart_order", title: "Place this order" },
+      { id: "pay_cancel",       title: "Start a new order" },
     ],
   });
 }
