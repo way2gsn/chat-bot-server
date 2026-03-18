@@ -314,21 +314,6 @@ async function handleTextMessage(from, session, text) {
   const isNewCustomer = !session.lang || session.state === "new";
 
   if (isGreeting || isNewCustomer) {
-    if (FLOW_SHOPPING) {
-      try {
-        await sendFlowTemplate(from, {
-          templateName: "phasal_bazar_shopping",
-          language:     "en",
-          flowId:       FLOW_SHOPPING,
-          screenName:   "WELCOME",
-        });
-        saveSession(from, { state: "browsing", lang: lang || "en", customerType: session.customerType || "retail", messages: [] });
-        return;
-      } catch (flowErr) {
-        console.error("Flow template failed:", flowErr.message);
-        // Fall through to text menu below
-      }
-    }
     // Fallback — always send main menu if flow fails
     if (isNewCustomer) {
       saveSession(from, { state: "choosing_lang" });
