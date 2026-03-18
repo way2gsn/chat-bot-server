@@ -132,10 +132,25 @@ app.post("/webhook", async (req, res) => {
       return;
     }
     if (msgType === "text")  { await handleTextMessage(from, session, msg.text.body.trim()); return; }
+    // WhatsApp native catalog order
+    if (msgType === "order") {
+      await handleCatalogOrder(from, session, msg.order);
+      return;
+    }
     if (msgType === "interactive" && msg.interactive?.type === "nfm_reply") {
       await handleFlowResponse(from, session, msg.interactive.nfm_reply); return;
     }
+    if (msgType === "interactive" && msg.interactive?.type === "button_reply") {
+      const payload = msg.interactive.button_reply?.id || "";
+      if (payload === "START_SHOPPING") {
+        // Customer tapped "Start Shopping" from template
+        saveSession(from, { state: "browsing", lang: session.lang || "en", customerType: session.customerType || "retail" });
+        await sendMainMenu(from, session.lang || "en", k => t(session.lang || "en", k));
+        return;
+      }
+    }
     if (msgType === "image") { await handlePaymentScreenshot(from, session); return; }
+    if (msgType === "order") { await handleNativeOrder(from, session, msg.order); return; }
   } catch (err) { console.error("Webhook error:", err.message, err.stack); }
 });
 
@@ -292,24 +307,13 @@ async function handleTextMessage(from, session, text) {
     return;
   }
 
-  // ── PRIORITY 2: New customer setup ─────────────────────────────────────────
-
-  if (!session.lang || session.state === "new") {
-    saveSession(from, { state: "choosing_lang" });
-    await sendLanguageMenu(from);
-    return;
-  }
-
-  if (!session.customerType || session.state === "choosing_type") {
-    await sendCustomerTypeMenu(from, lang);
-    return;
-  }
-
-  // ── PRIORITY 3: Normal browsing ─────────────────────────────────────────────
+  // ── PRIORITY 2 & 3: Send Flow for ALL customers (new + returning) ───────────
 
   const greetings = ["hi","hello","hey","start","menu","helo","hii"];
-  if (greetings.some(g => lower === g || lower.startsWith(g+" ")) || /^[\u0900-\u097F\u0B80-\u0BFF\u0C00-\u0C7F]/.test(text)) {
-    // Send Flow via approved template — works for all users
+  const isGreeting = greetings.some(g => lower === g || lower.startsWith(g+" ")) || /^[\u0900-\u097F\u0B80-\u0BFF\u0C00-\u0C7F]/.test(text);
+  const isNewCustomer = !session.lang || session.state === "new";
+
+  if (isGreeting || isNewCustomer) {
     if (FLOW_SHOPPING) {
       try {
         await sendFlowTemplate(from, {
@@ -318,14 +322,28 @@ async function handleTextMessage(from, session, text) {
           flowId:       FLOW_SHOPPING,
           screenName:   "WELCOME",
         });
-        saveSession(from, { state: "browsing", messages: [] });
+        saveSession(from, { state: "browsing", lang: lang || "en", customerType: session.customerType || "retail", messages: [] });
         return;
       } catch (flowErr) {
-        console.log("Flow template failed, falling back to text menu:", flowErr.message);
+        console.error("Flow template failed:", flowErr.message);
+        // Fall through to text menu below
       }
     }
+    // Fallback — always send main menu if flow fails
+    if (isNewCustomer) {
+      saveSession(from, { state: "choosing_lang" });
+      await sendLanguageMenu(from);
+      return;
+    }
+    // Fallback to text menu for returning customers
     await sendMainMenu(from, lang, k => t(lang, k));
     saveSession(from, { state: "browsing", messages: [] });
+    return;
+  }
+
+  // Customer type not set — ask
+  if (!session.customerType || session.state === "choosing_type") {
+    await sendCustomerTypeMenu(from, lang);
     return;
   }
 
@@ -922,6 +940,121 @@ Hamari team 2-4 ghante mein contact karegi. 📞`,
 
   // Generic flow completion
   await sendText(from, lang === "hi" ? "✅ Dhanyavaad! Hum aapko jaldi contact karenge." : "✅ Thank you! We will contact you shortly.");
+}
+
+// ── Handle native catalog order (WhatsApp cart → Place order) ────────────────
+async function handleCatalogOrder(from, session, order) {
+  const { lang = "en" } = session;
+  if (!order || !order.product_items) {
+    await sendText(from, "Sorry, could not process your order. Please try again.");
+    return;
+  }
+
+  const items = order.product_items.map(item => ({
+    id:       item.product_retailer_id,
+    name:     item.product_name || item.product_retailer_id,
+    qty:      item.quantity,
+    price:    item.item_price,
+    subtotal: item.quantity * item.item_price,
+    emoji:    "🌾",
+  }));
+
+  const total   = items.reduce((s, i) => s + i.subtotal, 0);
+  const orderId = generateOrderId();
+
+  // Save to session for address collection
+  saveSession(from, {
+    state:        "awaiting_address",
+    chosenPayment: "COD",
+    pendingOrder:  { orderId, items, total, cartItem: items[0] },
+  });
+
+  // Show order summary
+  const itemsList = items.map(i => `${i.emoji} ${i.name} x${i.qty} = Rs.${i.subtotal.toFixed(2)}`).join("\n");
+  const msg = {
+    en: `🛒 *Order Received!*
+
+${itemsList}
+
+💰 *Total: ₹${total.toFixed(2)}*
+
+📍 Please send your *delivery address* to confirm the order.`,
+    hi: `🛒 *Order Mila!*
+
+${itemsList}
+
+💰 *Total: ₹${total.toFixed(2)}*
+
+📍 Order confirm karne ke liye apna *delivery address* bhejein.`,
+    ta: `🛒 *ஆர்டர் கிடைத்தது!*
+
+${itemsList}
+
+💰 *மொத்தம்: ₹${total.toFixed(2)}*
+
+📍 முகவரி அனுப்பவும்.`,
+    te: `🛒 *ఆర్డర్ అందింది!*
+
+${itemsList}
+
+💰 *మొత్తం: ₹${total.toFixed(2)}*
+
+📍 డెలివరీ చిరునామా పంపండి.`,
+  };
+  await sendText(from, msg[lang] || msg.en);
+}
+
+// ── Native WhatsApp Cart Order Handler ───────────────────────────────────────
+async function handleNativeOrder(from, session, order) {
+  const { lang = "en" } = session;
+  console.log("Native order received from:", from, JSON.stringify(order));
+
+  if (!order || !order.product_items) {
+    await sendText(from, "Order received but no items found. Please try again.");
+    return;
+  }
+
+  const orderId = generateOrderId();
+  const items = order.product_items.map(item => ({
+    id:       item.product_retailer_id,
+    name:     item.product_retailer_id,
+    emoji:    "🌾",
+    qty:      item.quantity,
+    price:    item.item_price,
+    subtotal: item.item_price * item.quantity,
+  }));
+
+  const total = items.reduce((s, i) => s + i.subtotal, 0);
+
+  // Save session with pending order — ask for address next
+  saveSession(from, {
+    state:        "awaiting_address",
+    chosenPayment: "COD",
+    pendingOrder: { orderId, cartItem: items[0], items, total },
+    cart:         items,
+  });
+
+  // Save user profile
+  saveUser(from, { lang, customerType: session.customerType || "retail" });
+
+  const itemLines = items.map(function(i) { return i.emoji + " " + i.name + " x" + i.qty + " = Rs." + i.subtotal; }).join("\n");
+  const msg = {
+    en: "🛒 *Order received!*\n\n" + itemLines + "\n\n💰 Total: Rs." + total + "\n\nPlease send your *delivery address* to complete the order.\n(or type CANCEL)",
+    hi: "🛒 *Order mil gaya!*\n\n" + itemLines + "\n\n💰 Total: Rs." + total + "\n\nAddress bhejein.",
+    ta: "🛒 *ஆர்டர்!*\n\nமொத்தம்: Rs." + total + "\n\nமுகவரி அனுப்பவும்.",
+    te: "🛒 *ఆర్డర్!*\n\nమొత్తం: Rs." + total + "\n\nచిరునామా పంపండి.",
+  };
+  await sendText(from, msg[lang] || msg.en);
+
+  // Also ask payment method
+  await sendButtons(from, {
+    bodyText: lang === "hi" ? "Payment method chunein:" : "Choose payment method:",
+    buttons: [
+      { id: "pay_upi", title: "💳 UPI / PhonePe" },
+      { id: "pay_cod", title: "💵 Cash on Delivery" },
+      { id: "pay_cancel", title: "❌ Cancel" },
+    ],
+  });
 }
 
 app.listen(PORT, () => console.log(`🌾 Phasal Bazar Bot running on port ${PORT}`));
