@@ -318,9 +318,10 @@ async function handleTextMessage(from, session, text) {
         buttonText: "🛒 Start Shopping",
         screenName: "WELCOME",
       });
-    } else {
-      await sendMainMenu(from, lang, k => t(lang, k));
+      saveSession(from, { state: "browsing", messages: [] });
+      return;
     }
+    await sendMainMenu(from, lang, k => t(lang, k));
     saveSession(from, { state: "browsing", messages: [] });
     return;
   }
