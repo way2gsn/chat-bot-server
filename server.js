@@ -23,7 +23,7 @@ const { buildPaymentMessage, generateOrderId } = require("./lib/payment");
 const FLOW_SHOPPING = process.env.FLOW_SHOPPING_ID || "1926551408029255";
 const FLOW_SUPPORT  = process.env.FLOW_SUPPORT_ID  || "1933182807315833";
 const FLOW_ADDRESS  = process.env.FLOW_ADDRESS_ID || process.env.FLOW_SHOPPING_ID || "";
-const FLOW_ADDRESS_SCREEN = process.env.FLOW_ADDRESS_SCREEN || "ADDRESS";
+const FLOW_ADDRESS_SCREEN = process.env.FLOW_ADDRESS_SCREEN || "CHECKOUT";
 const { saveOrder, confirmOrder, cancelOrder, updateOrder, getAllOrders, getStats } = require("./lib/orders");
 const { getUser, saveUser, getUserAddress, getAllUsers } = require("./lib/users");
 const { markRead, sendText, sendImage, sendProductCard, sendMainMenu, sendCategoriesMenu, sendProductsMenu, sendButtons, sendListMenu, sendFlow, sendFlowTemplate, sendCatalogLink } = require("./lib/whatsapp");
@@ -492,15 +492,11 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
     }
     const total   = cart.reduce((s, i) => s + i.subtotal, 0);
     const orderId = generateOrderId();
-    saveSession(from, { state: "choosing_payment", pendingOrder: { orderId, cartItem: cart[0], items: cart, total } });
-    const ask = { en: "How would you like to pay?", hi: "Kaise payment karein?", ta: "எப்படி பணம் செலுத்த விரும்புகிறீர்கள்?", te: "ఎలా చెల్లించాలనుకుంటున్నారు?" };
-    await sendButtons(from, {
-      bodyText: ask[lang] || ask.en,
-      buttons: [
-        { id: "pay_upi",    title: "💳 UPI / PhonePe" },
-        { id: "pay_cod",    title: "💵 Cash on Delivery" },
-        { id: "pay_cancel", title: "❌ Cancel" },
-      ],
+    saveSession(from, { state: "awaiting_address_start", pendingOrder: { orderId, cartItem: cart[0], items: cart, total } });
+    await sendAddressStartPrompt(from, {
+      ...session,
+      lang,
+      pendingOrder: { orderId, cartItem: cart[0], items: cart, total },
     });
     return;
   }
@@ -514,8 +510,8 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
   // Saved address buttons
   if (replyId === "use_saved_address") {
     const savedAddress = getUserAddress(from);
-    saveSession(from, { address: savedAddress, state: "awaiting_confirm" });
-    await sendFinalConfirmation(from, { ...session, address: savedAddress });
+    saveSession(from, { address: savedAddress });
+    await sendPaymentMethodMenu(from, { ...session, address: savedAddress });
     return;
   }
   if (replyId === "new_address") {
@@ -583,30 +579,19 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
   if (replyId === "place_cart_order") {
     const { pendingOrder } = session;
     if (!pendingOrder) { await sendText(from, "No order found."); return; }
-    saveSession(from, { chosenPayment: "COD" });
-    const askAddr = {
-      en: "Thanks for your order! Next, choose a payment method.",
-      hi: "Order ke liye shukriya! Ab payment method choose karein.",
-      ta: "ஆர்டருக்கு நன்றி! அடுத்து கட்டண முறையைத் தேர்வு செய்யவும்.",
-      te: "ఆర్డర్‌కు ధన్యవాదాలు! ఇప్పుడు payment method ఎంచుకోండి.",
-    };
-    await sendButtons(from, {
-      bodyText: askAddr[lang] || askAddr.en,
-      buttons: [
-        { id: "pay_cod", title: "Cash on Delivery" },
-        { id: "pay_upi", title: "UPI/Net-Banking/Card" },
-        { id: "pay_cancel", title: "Cancel" },
-      ],
-    });
+    saveSession(from, { state: "awaiting_address_start" });
+    await sendAddressStartPrompt(from, { ...session, lang, pendingOrder });
     return;
   }
 
   if (replyId === "pay_upi") {
-    await showSummaryThenPay(from, session, "UPI");
+    saveSession(from, { chosenPayment: "UPI" });
+    await sendFinalConfirmation(from, { ...session, chosenPayment: "UPI" });
     return;
   }
   if (replyId === "pay_cod") {
-    await showSummaryThenPay(from, session, "COD");
+    saveSession(from, { chosenPayment: "COD" });
+    await sendFinalConfirmation(from, { ...session, chosenPayment: "COD" });
     return;
   }
   if (replyId === "pay_cancel") {
@@ -669,10 +654,10 @@ async function requestAddressInNativeUI(from, session) {
   const { lang = "en", pendingOrder, chosenPayment } = session;
   const total = pendingOrder?.total || 0;
   const body = {
-    en: `Please enter your delivery address in the native form.\nOrder total: Rs.${total}\nPayment: ${chosenPayment || "COD"}`,
-    hi: `Kripya native form mein apna delivery address bharein.\nOrder total: Rs.${total}\nPayment: ${chosenPayment || "COD"}`,
-    ta: `தயவுசெய்து native form-ல் உங்கள் டெலிவரி முகவரியை உள்ளிடவும்.\nமொத்தம்: Rs.${total}\nகட்டணம்: ${chosenPayment || "COD"}`,
-    te: `దయచేసి native form లో మీ డెలివరీ చిరునామా నమోదు చేయండి.\nమొత్తం: Rs.${total}\nచెల్లింపు: ${chosenPayment || "COD"}`,
+    en: `Please complete your delivery details in the native form.\nOrder total: Rs.${total}`,
+    hi: `Kripya native form mein apni delivery details bharein.\nOrder total: Rs.${total}`,
+    ta: `தயவுசெய்து native form-ல் உங்கள் டெலிவரி விவரங்களை பூர்த்தி செய்யவும்.\nமொத்தம்: Rs.${total}`,
+    te: `దయచేసి native form లో మీ delivery details పూర్తి చేయండి.\nమొత్తం: Rs.${total}`,
   };
 
   if (FLOW_ADDRESS) {
@@ -682,7 +667,7 @@ async function requestAddressInNativeUI(from, session) {
       headerText: "Delivery Address",
       bodyText: body[lang] || body.en,
       footerText: "Phasal Bazar Checkout",
-      buttonText: "Enter Address",
+      buttonText: "Provide Address",
       screenName: FLOW_ADDRESS_SCREEN,
     });
     return;
@@ -696,6 +681,46 @@ async function requestAddressInNativeUI(from, session) {
     te: `📍 *దాదాపు అయిపోయింది!*\n\nమీ *డెలివరీ చిరునామా* పంపండి (వీధి, ప్రాంతం, నగరం).`,
   };
   await sendText(from, ask[lang] || ask.en);
+}
+
+async function sendAddressStartPrompt(from, session) {
+  const { lang = "en", pendingOrder } = session;
+  const total = pendingOrder?.total || 0;
+  const msg = {
+    en: `🛒 *Order Received!*\n\n💰 *Total: ₹${total.toFixed ? total.toFixed(2) : total}*\n\nTap below to provide your delivery details.`,
+    hi: `🛒 *Order Mila!*\n\n💰 *Total: ₹${total.toFixed ? total.toFixed(2) : total}*\n\nApni delivery details dene ke liye neeche tap karein.`,
+    ta: `🛒 *ஆர்டர் கிடைத்தது!*\n\n💰 *மொத்தம்: ₹${total.toFixed ? total.toFixed(2) : total}*\n\nடெலிவரி விவரங்களை வழங்க கீழே தட்டவும்.`,
+    te: `🛒 *ఆర్డర్ అందింది!*\n\n💰 *మొత్తం: ₹${total.toFixed ? total.toFixed(2) : total}*\n\nడెలివరీ వివరాలు ఇవ్వడానికి కింద నొక్కండి.`,
+  };
+
+  saveSession(from, { state: "awaiting_address_start" });
+  await sendButtons(from, {
+    bodyText: msg[lang] || msg.en,
+    buttons: [
+      { id: "start_address", title: "Checkout Details" },
+      { id: "pay_cancel",    title: "Cancel Order" },
+    ],
+  });
+}
+
+async function sendPaymentMethodMenu(from, session) {
+  const { lang = "en" } = session;
+  const ask = {
+    en: "Please select a payment method to complete this order.",
+    hi: "Order complete karne ke liye payment method select karein.",
+    ta: "இந்த ஆர்டரை முடிக்க கட்டண முறையைத் தேர்ந்தெடுக்கவும்.",
+    te: "ఈ ఆర్డర్ పూర్తి చేయడానికి payment method ఎంచుకోండి.",
+  };
+
+  saveSession(from, { state: "choosing_payment" });
+  await sendButtons(from, {
+    bodyText: ask[lang] || ask.en,
+    buttons: [
+      { id: "pay_cod", title: "Cash on Delivery" },
+      { id: "pay_upi", title: "UPI/Card" },
+      { id: "pay_cancel", title: "Cancel" },
+    ],
+  });
 }
 
 // ── Customer type menu ───────────────────────────────────────────────────────
@@ -747,7 +772,7 @@ async function addToCart(from, session, productId, qty, lang) {
   });
 }
 
-// ── Step 1: Ask payment method FIRST ─────────────────────────────────────────
+// ── Step 1: Capture address FIRST ────────────────────────────────────────────
 async function initiateOrder(from, session, productId, qty) {
   const { lang, customerType = "retail" } = session;
   const product  = getProductById(productId);
@@ -760,22 +785,11 @@ async function initiateOrder(from, session, productId, qty) {
   const name     = product.name[lang] || product.name.en;
   const cartItem = { id: productId, emoji: product.emoji, name, qty, subtotal, price, customerType };
 
-  saveSession(from, { state: "choosing_payment", cart: [cartItem], pendingOrder: { orderId, cartItem, total: subtotal } });
-
-  const ask = {
-    en: "How would you like to pay?",
-    hi: "Aap kaise payment karna chahte hain?",
-    ta: "நீங்கள் எப்படி பணம் செலுத்த விரும்புகிறீர்கள்?",
-    te: "మీరు ఎలా చెల్లించాలనుకుంటున్నారు?",
-  };
-
-  await sendButtons(from, {
-    bodyText: ask[lang] || ask.en,
-    buttons: [
-      { id: "pay_upi",    title: "💳 UPI / PhonePe" },
-      { id: "pay_cod",    title: "💵 Cash on Delivery" },
-      { id: "pay_cancel", title: "❌ Cancel" },
-    ],
+  saveSession(from, { state: "awaiting_address_start", cart: [cartItem], pendingOrder: { orderId, cartItem, total: subtotal } });
+  await sendAddressStartPrompt(from, {
+    ...session,
+    lang,
+    pendingOrder: { orderId, cartItem, total: subtotal },
   });
 }
 
@@ -1003,17 +1017,43 @@ async function handleFlowResponse(from, session, nfmReply) {
 
   console.log("Flow response from", from, ":", data);
 
+  const flowPincode = data.pincode || data.pin_code || data.postcode || "";
   const flowAddress =
     data.address ||
     data.delivery_address ||
     data.full_address ||
     data.customer_address ||
-    [data.address_line_1, data.address_line_2, data.city, data.state, data.pincode].filter(Boolean).join(", ");
+    [data.address_line_1, data.address_line_2, data.city, data.state, flowPincode].filter(Boolean).join(", ");
 
   if (flowAddress && session.pendingOrder) {
-    saveUser(from, { address: flowAddress, lang, customerType: session.customerType });
-    saveSession(from, { address: flowAddress, state: "awaiting_confirm" });
-    await sendFinalConfirmation(from, { ...session, address: flowAddress });
+    const fullAddress = flowPincode && !flowAddress.includes(flowPincode)
+      ? `${flowAddress}, ${flowPincode}`
+      : flowAddress;
+    const chosenPayment = data.payment_method || session.chosenPayment;
+
+    saveUser(from, {
+      name: data.customer_name || getUser(from)?.name,
+      address: fullAddress,
+      lang,
+      customerType: session.customerType,
+    });
+    saveSession(from, {
+      address: fullAddress,
+      chosenPayment,
+      customerName: data.customer_name || session.customerName || null,
+    });
+
+    if (chosenPayment) {
+      await sendFinalConfirmation(from, {
+        ...session,
+        address: fullAddress,
+        chosenPayment,
+        customerName: data.customer_name || session.customerName || null,
+      });
+      return;
+    }
+
+    await sendPaymentMethodMenu(from, { ...session, address: fullAddress });
     return;
   }
 
@@ -1121,7 +1161,7 @@ async function handleCatalogOrder(from, session, order) {
 
   // Save to session for address collection
   saveSession(from, {
-    state:        "choosing_payment",
+    state:        "awaiting_address_start",
     chosenPayment: "COD",
     pendingOrder:  { orderId, items, total, cartItem: items[0] },
   });
@@ -1191,8 +1231,7 @@ async function handleNativeOrder(from, session, order) {
 
   // Save session with pending order — ask for address next
   saveSession(from, {
-    state:        "choosing_payment",
-    chosenPayment: "COD",
+    state:        "browsing",
     pendingOrder: { orderId, cartItem: items[0], items, total },
     cart:         items,
   });
