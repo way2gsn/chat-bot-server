@@ -22,9 +22,11 @@ const { buildPaymentMessage, generateOrderId } = require("./lib/payment");
 // ── WhatsApp Flow IDs ─────────────────────────────────────────────────────────
 const FLOW_SHOPPING = process.env.FLOW_SHOPPING_ID || "1926551408029255";
 const FLOW_SUPPORT  = process.env.FLOW_SUPPORT_ID  || "1933182807315833";
+const FLOW_ADDRESS  = process.env.FLOW_ADDRESS_ID || process.env.FLOW_SHOPPING_ID || "";
+const FLOW_ADDRESS_SCREEN = process.env.FLOW_ADDRESS_SCREEN || "ADDRESS";
 const { saveOrder, confirmOrder, cancelOrder, updateOrder, getAllOrders, getStats } = require("./lib/orders");
 const { getUser, saveUser, getUserAddress, getAllUsers } = require("./lib/users");
-const { markRead, sendText, sendProductCard, sendMainMenu, sendCategoriesMenu, sendProductsMenu, sendButtons, sendListMenu, sendFlow, sendFlowTemplate } = require("./lib/whatsapp");
+const { markRead, sendText, sendImage, sendProductCard, sendMainMenu, sendCategoriesMenu, sendProductsMenu, sendButtons, sendListMenu, sendFlow, sendFlowTemplate, sendCatalogLink } = require("./lib/whatsapp");
 
 const PORT         = process.env.PORT || 3000;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "phasalbazar2024";
@@ -124,6 +126,10 @@ app.post("/webhook", async (req, res) => {
     await markRead(msg.id);
     const session = getSession(from);
 
+    if (msgType === "interactive" && msg.interactive?.type === "nfm_reply") {
+      await handleFlowResponse(from, session, msg.interactive.nfm_reply);
+      return;
+    }
     if (msgType === "interactive") {
       const r    = msg.interactive;
       const id   = r?.list_reply?.id   || r?.button_reply?.id   || "";
@@ -136,9 +142,6 @@ app.post("/webhook", async (req, res) => {
     if (msgType === "order") {
       await handleCatalogOrder(from, session, msg.order);
       return;
-    }
-    if (msgType === "interactive" && msg.interactive?.type === "nfm_reply") {
-      await handleFlowResponse(from, session, msg.interactive.nfm_reply); return;
     }
     if (msgType === "interactive" && msg.interactive?.type === "button_reply") {
       const payload = msg.interactive.button_reply?.id || "";
@@ -211,9 +214,7 @@ async function handleTextMessage(from, session, text) {
       return;
     }
     // No — ask for new address
-    saveSession(from, { state: "awaiting_address" });
-    const msg = { en: "📍 Please send your new delivery address:", hi: "📍 Naya delivery address bhejein:", ta: "📍 புதிய முகவரி அனுப்பவும்:", te: "📍 కొత్త చిరునామా పంపండి:" };
-    await sendText(from, msg[lang] || msg.en);
+    await requestAddressInNativeUI(from, session);
     return;
   }
 
@@ -233,12 +234,18 @@ async function handleTextMessage(from, session, text) {
     }
     // Not understood — remind clearly
     const remind = {
-      en: "Reply *CONFIRM* ✅ to place order\nReply *CANCEL* ❌ to cancel",
-      hi: "*CONFIRM* likhein order ke liye\n*CANCEL* likhein cancel karne ke liye",
-      ta: "ஆர்டர் செய்ய *CONFIRM* ✅\nரத்து செய்ய *CANCEL* ❌",
-      te: "ఆర్డర్‌కు *CONFIRM* ✅\nరద్దుకు *CANCEL* ❌",
+      en: "Please tap *Confirm Order* or *Cancel Order* below.",
+      hi: "Kripya neeche *Confirm Order* ya *Cancel Order* tap karein.",
+      ta: "கீழே *Confirm Order* அல்லது *Cancel Order* தட்டவும்.",
+      te: "దయచేసి కింద *Confirm Order* లేదా *Cancel Order* నొక్కండి.",
     };
-    await sendText(from, remind[lang] || remind.en);
+    await sendButtons(from, {
+      bodyText: remind[lang] || remind.en,
+      buttons: [
+        { id: "confirm_order", title: "Confirm Order" },
+        { id: "cancel_order",  title: "Cancel Order" },
+      ],
+    });
     return;
   }
 
@@ -258,42 +265,29 @@ async function handleTextMessage(from, session, text) {
 
   // Awaiting PAID confirmation after screenshot
   if (session.state === "awaiting_paid_confirm") {
-    const word = text.trim().toLowerCase();
-    if (word === "paid") {
-      const { pendingOrder } = session;
-      if (pendingOrder) {
-        confirmOrder(pendingOrder.orderId);
-        const msg = {
-          en: `✅ *Payment Confirmed!*\nOrder *${pendingOrder.orderId}* placed 🎉\nDelivery in 2-3 days. Thank you! 🌾`,
-          hi: `✅ *Payment Confirm!*\nOrder *${pendingOrder.orderId}* place ho gaya 🎉\n2-3 din mein delivery. Dhanyavaad! 🌾`,
-          ta: `✅ *Payment உறுதி!*\nOrder *${pendingOrder.orderId}* 🎉\n2-3 நாட்களில் டெலிவரி. நன்றி! 🌾`,
-          te: `✅ *Payment నిర్ధారణ!*\nOrder *${pendingOrder.orderId}* 🎉\n2-3 రోజుల్లో డెలివరీ. ధన్యవాదాలు! 🌾`,
-        };
-        await sendText(from, msg[lang] || msg.en);
-        saveSession(from, { state: "idle", cart: [], pendingOrder: null, address: null });
-      }
-      return;
-    }
-    if (word === "cancel") {
-      const { pendingOrder } = session;
-      if (pendingOrder) cancelOrder(pendingOrder.orderId);
-      saveSession(from, { state: "idle", cart: [], pendingOrder: null, address: null });
-      const msg = { en: "❌ Order cancelled.", hi: "❌ Cancel ho gaya.", ta: "❌ ரத்து.", te: "❌ రద్దు." };
-      await sendText(from, msg[lang] || msg.en);
-      return;
-    }
-    const remind = { en: "Please type *PAID* to confirm or *CANCEL* to cancel.", hi: "*PAID* ya *CANCEL* likhein.", ta: "*PAID* அல்லது *CANCEL* என்று அனுப்பவும்.", te: "*PAID* లేదా *CANCEL* అని టైప్ చేయండి." };
-    await sendText(from, remind[lang] || remind.en);
+    const remind = {
+      en: "Please tap *Payment Done* or *Cancel Order* below.",
+      hi: "Kripya neeche *Payment Done* ya *Cancel Order* tap karein.",
+      ta: "கீழே *Payment Done* அல்லது *Cancel Order* தட்டவும்.",
+      te: "దయచేసి కింద *Payment Done* లేదా *Cancel Order* నొక్కండి.",
+    };
+    await sendButtons(from, {
+      bodyText: remind[lang] || remind.en,
+      buttons: [
+        { id: "confirm_payment", title: "Payment Done" },
+        { id: "cancel_order",    title: "Cancel Order" },
+      ],
+    });
     return;
   }
 
   // Awaiting payment screenshot
   if (session.state === "awaiting_payment") {
     const msg = {
-      en: "📸 Please send the *payment screenshot* to confirm your order, or type *CANCEL* to cancel.",
-      hi: "📸 Order confirm karne ke liye *payment screenshot* bhejein, ya *CANCEL* likhein.",
-      ta: "📸 ஆர்டர் உறுதிப்படுத்த *payment screenshot* அனுப்பவும்.",
-      te: "📸 ఆర్డర్ నిర్ధారించడానికి *payment screenshot* పంపండి.",
+      en: "📸 Please send the *payment screenshot* to confirm your order, or tap *Cancel Order* below.",
+      hi: "📸 Order confirm karne ke liye *payment screenshot* bhejein, ya neeche *Cancel Order* tap karein.",
+      ta: "📸 ஆர்டர் உறுதிப்படுத்த *payment screenshot* அனுப்பவும், அல்லது கீழே *Cancel Order* தட்டவும்.",
+      te: "📸 ఆర్డర్ నిర్ధారించడానికి *payment screenshot* పంపండి, లేదా కింద *Cancel Order* నొక్కండి.",
     };
     if (lower === "cancel") {
       const { pendingOrder } = session;
@@ -303,7 +297,12 @@ async function handleTextMessage(from, session, text) {
       await sendText(from, cm[lang] || cm.en);
       return;
     }
-    await sendText(from, msg[lang] || msg.en);
+    await sendButtons(from, {
+      bodyText: msg[lang] || msg.en,
+      buttons: [
+        { id: "cancel_order", title: "Cancel Order" },
+      ],
+    });
     return;
   }
 
@@ -520,8 +519,33 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
     return;
   }
   if (replyId === "new_address") {
-    saveSession(from, { state: "awaiting_address" });
-    const msg = { en: "📍 Please send your new delivery address:", hi: "📍 Naya address bhejein:", ta: "📍 புதிய முகவரி அனுப்பவும்:", te: "📍 కొత్త చిరునామా పంపండి:" };
+    await requestAddressInNativeUI(from, session);
+    return;
+  }
+  if (replyId === "confirm_order") {
+    await placeConfirmedOrder(from, session);
+    return;
+  }
+  if (replyId === "confirm_payment") {
+    const { pendingOrder } = session;
+    if (pendingOrder) {
+      await confirmOrder(pendingOrder.orderId);
+      const msg = {
+        en: `✅ *Payment Confirmed!*\nOrder *${pendingOrder.orderId}* placed.\nDelivery in 2-3 days. Thank you! 🌾`,
+        hi: `✅ *Payment Confirmed!*\nOrder *${pendingOrder.orderId}* place ho gaya.\n2-3 din mein delivery. Dhanyavaad! 🌾`,
+        ta: `✅ *Payment Confirmed!*\nOrder *${pendingOrder.orderId}* place செய்யப்பட்டது.\n2-3 நாட்களில் டெலிவரி. நன்றி! 🌾`,
+        te: `✅ *Payment Confirmed!*\nOrder *${pendingOrder.orderId}* place అయింది.\n2-3 రోజుల్లో డెలివరీ. ధన్యవాదాలు! 🌾`,
+      };
+      await sendText(from, msg[lang] || msg.en);
+      saveSession(from, { state: "idle", cart: [], pendingOrder: null, address: null });
+    }
+    return;
+  }
+  if (replyId === "cancel_order") {
+    const { pendingOrder } = session;
+    if (pendingOrder) await cancelOrder(pendingOrder.orderId);
+    saveSession(from, { state: "idle", cart: [], pendingOrder: null, address: null });
+    const msg = { en: "❌ Order cancelled.", hi: "❌ Order cancel ho gaya.", ta: "❌ ஆர்டர் ரத்து.", te: "❌ ఆర్డర్ రద్దు." };
     await sendText(from, msg[lang] || msg.en);
     return;
   }
@@ -555,13 +579,12 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
   if (replyId === "place_cart_order") {
     const { pendingOrder } = session;
     if (!pendingOrder) { await sendText(from, "No order found."); return; }
-    // Ask for address using WhatsApp native address flow
-    saveSession(from, { chosenPayment: "COD", state: "awaiting_address" });
+    saveSession(from, { chosenPayment: "COD" });
     const askAddr = {
-      en: "Thanks for your order! Tell us what address you'd like this order delivered to.",
-      hi: "Order ke liye shukriya! Delivery address batayein.",
-      ta: "ஆர்டருக்கு நன்றி! டெலிவரி முகவரி சொல்லுங்கள்.",
-      te: "ఆర్డర్‌కు ధన్యవాదాలు! డెలివరీ చిరునామా చెప్పండి.",
+      en: "Thanks for your order! Next, choose a payment method.",
+      hi: "Order ke liye shukriya! Ab payment method choose karein.",
+      ta: "ஆர்டருக்கு நன்றி! அடுத்து கட்டண முறையைத் தேர்வு செய்யவும்.",
+      te: "ఆర్డర్‌కు ధన్యవాదాలు! ఇప్పుడు payment method ఎంచుకోండి.",
     };
     await sendButtons(from, {
       bodyText: askAddr[lang] || askAddr.en,
@@ -636,6 +659,39 @@ async function sendOrderHistory(from, session) {
     lines.push(`   ${new Date(o.createdAt).toLocaleDateString()}\n`);
   });
   await sendText(from, lines.join("\n"));
+}
+
+async function requestAddressInNativeUI(from, session) {
+  const { lang = "en", pendingOrder, chosenPayment } = session;
+  const total = pendingOrder?.total || 0;
+  const body = {
+    en: `Please enter your delivery address in the native form.\nOrder total: Rs.${total}\nPayment: ${chosenPayment || "COD"}`,
+    hi: `Kripya native form mein apna delivery address bharein.\nOrder total: Rs.${total}\nPayment: ${chosenPayment || "COD"}`,
+    ta: `தயவுசெய்து native form-ல் உங்கள் டெலிவரி முகவரியை உள்ளிடவும்.\nமொத்தம்: Rs.${total}\nகட்டணம்: ${chosenPayment || "COD"}`,
+    te: `దయచేసి native form లో మీ డెలివరీ చిరునామా నమోదు చేయండి.\nమొత్తం: Rs.${total}\nచెల్లింపు: ${chosenPayment || "COD"}`,
+  };
+
+  if (FLOW_ADDRESS) {
+    saveSession(from, { state: "collecting_address_flow" });
+    await sendFlow(from, {
+      flowId: FLOW_ADDRESS,
+      headerText: "Delivery Address",
+      bodyText: body[lang] || body.en,
+      footerText: "Phasal Bazar Checkout",
+      buttonText: "Enter Address",
+      screenName: FLOW_ADDRESS_SCREEN,
+    });
+    return;
+  }
+
+  saveSession(from, { state: "awaiting_address" });
+  const ask = {
+    en: `📍 *Almost there!*\n\nPlease send your *delivery address* (street, area, city).`,
+    hi: `📍 *Bas thoda aur!*\n\nApna *delivery address* bhejein (gali, area, shahar).`,
+    ta: `📍 *கிட்டத்தட்ட முடிந்தது!*\n\nஉங்கள் *முகவரி* அனுப்பவும் (தெரு, பகுதி, நகரம்).`,
+    te: `📍 *దాదాపు అయిపోయింది!*\n\nమీ *డెలివరీ చిరునామా* పంపండి (వీధి, ప్రాంతం, నగరం).`,
+  };
+  await sendText(from, ask[lang] || ask.en);
 }
 
 // ── Customer type menu ───────────────────────────────────────────────────────
@@ -731,10 +787,10 @@ async function showSummaryThenPay(from, session, paymentMethod) {
     // Ask if they want to use saved address
     saveSession(from, { state: "confirm_saved_address" });
     const ask = {
-      en: `📍 *Delivery Address*\n\nUse your saved address?\n*"${savedAddress}"*\n\nReply *YES* to use it or *NO* to enter a new one.`,
-      hi: `📍 *Delivery Address*\n\nKya aap apna purana address use karna chahte hain?\n*"${savedAddress}"*\n\n*YES* likhein use karne ke liye ya *NO* naya address ke liye.`,
-      ta: `📍 *Delivery Address*\n\nசேமித்த முகவரி பயன்படுத்தவா?\n*"${savedAddress}"*\n\n*YES* அல்லது *NO* அனுப்பவும்.`,
-      te: `📍 *Delivery Address*\n\nసేవ్ చేసిన చిరునామా వాడాలా?\n*"${savedAddress}"*\n\n*YES* లేదా *NO* పంపండి.`,
+      en: `📍 *Delivery Address*\n\nUse your saved address?\n*"${savedAddress}"*\n\nTap one option below.`,
+      hi: `📍 *Delivery Address*\n\nKya aap apna purana address use karna chahte hain?\n*"${savedAddress}"*\n\nNeeche ek option tap karein.`,
+      ta: `📍 *Delivery Address*\n\nசேமித்த முகவரி பயன்படுத்தவா?\n*"${savedAddress}"*\n\nகீழே ஒரு விருப்பத்தைத் தட்டவும்.`,
+      te: `📍 *Delivery Address*\n\nసేవ్ చేసిన చిరునామా వాడాలా?\n*"${savedAddress}"*\n\nకింద ఒక ఎంపికను నొక్కండి.`,
     };
     await sendButtons(from, {
       bodyText: ask[lang] || ask.en,
@@ -747,14 +803,7 @@ async function showSummaryThenPay(from, session, paymentMethod) {
   }
 
   // No saved address — ask fresh
-  saveSession(from, { state: "awaiting_address" });
-  const ask = {
-    en: `📍 *Almost there!*\n\nPlease send your *delivery address* (street, area, city).`,
-    hi: `📍 *Bas thoda aur!*\n\nApna *delivery address* bhejein (gali, area, shahar).`,
-    ta: `📍 *கிட்டத்தட்ட முடிந்தது!*\n\nஉங்கள் *முகவரி* அனுப்பவும் (தெரு, பகுதி, நகரம்).`,
-    te: `📍 *దాదాపు అయిపోయింది!*\n\nమీ *డెలివరీ చిరునామా* పంపండి (వీధి, ప్రాంతం, నగరం).`,
-  };
-  await sendText(from, ask[lang] || ask.en);
+  await requestAddressInNativeUI(from, session);
 }
 
 // ── Step 3: Show final summary + ask CONFIRM ──────────────────────────────────
@@ -776,8 +825,7 @@ ${cartItem.emoji} *${cartItem.name}*
 🏷️ Type: ${ptype}
 📍 Deliver to: ${address}
 ─────────────────────
-Reply *CONFIRM* to place your order
-Reply *CANCEL* to cancel`,
+Tap below to confirm or cancel your order.`,
 
     hi: `🧾 *Final Order Summary*
 ─────────────────────
@@ -789,8 +837,7 @@ ${cartItem.emoji} *${cartItem.name}*
 🏷️ Type: ${ptype}
 📍 Pata: ${address}
 ─────────────────────
-Order karne ke liye *CONFIRM* likhein
-Cancel karne ke liye *CANCEL* likhein`,
+Neeche tap karke order confirm ya cancel karein.`,
 
     ta: `🧾 *இறுதி ஆர்டர் விவரம்*
 ─────────────────────
@@ -801,7 +848,7 @@ ${cartItem.emoji} *${cartItem.name}*
 💳 கட்டணம்: *${chosenPayment}*
 📍 முகவரி: ${address}
 ─────────────────────
-ஆர்டர் செய்ய *CONFIRM* என்று பதில் அளிக்கவும்`,
+கீழே தட்டி ஆர்டரை உறுதிப்படுத்தவும் அல்லது ரத்து செய்யவும்.`,
 
     te: `🧾 *తుది ఆర్డర్ వివరాలు*
 ─────────────────────
@@ -812,11 +859,17 @@ ${cartItem.emoji} *${cartItem.name}*
 💳 చెల్లింపు: *${chosenPayment}*
 📍 చిరునామా: ${address}
 ─────────────────────
-ఆర్డర్ చేయడానికి *CONFIRM* అని రిప్లై చేయండి`,
+కింద నొక్కి ఆర్డర్‌ను నిర్ధారించండి లేదా రద్దు చేయండి.`,
   };
 
   saveSession(from, { state: "awaiting_confirm" });
-  await sendText(from, summary[lang] || summary.en);
+  await sendButtons(from, {
+    bodyText: summary[lang] || summary.en,
+    buttons: [
+      { id: "confirm_order", title: "Confirm Order" },
+      { id: "cancel_order",  title: "Cancel Order" },
+    ],
+  });
 }
 
 // ── Step 4: Place order after CONFIRM ────────────────────────────────────────
@@ -845,6 +898,18 @@ async function placeConfirmedOrder(from, session) {
       const qrCaption = { en: "📱 *Scan to pay instantly*", hi: "📱 *Scan karke pay karein*", ta: "📱 *Scan செய்து pay செய்யவும்*", te: "📱 *Scan చేసి pay చేయండి*" };
       await sendImage(from, process.env.UPI_QR_IMAGE_URL, qrCaption[lang] || qrCaption.en);
     }
+    const followUp = {
+      en: "After payment, send the screenshot here. If needed, tap cancel below.",
+      hi: "Payment ke baad screenshot yahan bhejein. Zarurat ho to neeche cancel tap karein.",
+      ta: "கட்டணத்திற்குப் பிறகு screenshot-ஐ இங்கே அனுப்பவும். தேவைப்பட்டால் கீழே cancel தட்டவும்.",
+      te: "Payment తర్వాత screenshot ఇక్కడ పంపండి. అవసరమైతే కింద cancel నొక్కండి.",
+    };
+    await sendButtons(from, {
+      bodyText: followUp[lang] || followUp.en,
+      buttons: [
+        { id: "cancel_order", title: "Cancel Order" },
+      ],
+    });
   } else {
     // COD — done! Show confirmation like old bot
     saveSession(from, { state: "idle", cart: [], pendingOrder: null, address: null });
@@ -912,12 +977,18 @@ async function handlePaymentScreenshot(from, session) {
   // Screenshot received — now require PAID confirmation
   saveSession(from, { state: "awaiting_paid_confirm" });
   const msg = {
-    en: `📸 *Screenshot received!*\n\nPlease type *PAID* to confirm your payment.\nType *CANCEL* if you want to cancel.`,
-    hi: `📸 *Screenshot mil gaya!*\n\nPayment confirm karne ke liye *PAID* likhein.\nCancel karne ke liye *CANCEL* likhein.`,
-    ta: `📸 *Screenshot கிடைத்தது!*\n\nஉறுதிப்படுத்த *PAID* என்று அனுப்பவும்.\nரத்து செய்ய *CANCEL* அனுப்பவும்.`,
-    te: `📸 *Screenshot వచ్చింది!*\n\nనిర్ధారించడానికి *PAID* అని టైప్ చేయండి.\nరద్దు చేయడానికి *CANCEL* అని టైప్ చేయండి.`,
+    en: `📸 *Screenshot received!*\n\nTap *Payment Done* to confirm your payment, or tap *Cancel Order*.`,
+    hi: `📸 *Screenshot mil gaya!*\n\nPayment confirm karne ke liye *Payment Done* tap karein, ya *Cancel Order* tap karein.`,
+    ta: `📸 *Screenshot கிடைத்தது!*\n\nகட்டணத்தை உறுதிப்படுத்த *Payment Done* தட்டவும், அல்லது *Cancel Order* தட்டவும்.`,
+    te: `📸 *Screenshot వచ్చింది!*\n\nచెల్లింపును నిర్ధారించడానికి *Payment Done* నొక్కండి, లేదా *Cancel Order* నొక్కండి.`,
   };
-  await sendText(from, msg[lang] || msg.en);
+  await sendButtons(from, {
+    bodyText: msg[lang] || msg.en,
+    buttons: [
+      { id: "confirm_payment", title: "Payment Done" },
+      { id: "cancel_order",    title: "Cancel Order" },
+    ],
+  });
 }
 
 // ── Flow response handler ─────────────────────────────────────────────────────
@@ -927,6 +998,32 @@ async function handleFlowResponse(from, session, nfmReply) {
   try { data = JSON.parse(nfmReply.response_json); } catch {}
 
   console.log("Flow response from", from, ":", data);
+
+  const flowAddress =
+    data.address ||
+    data.delivery_address ||
+    data.full_address ||
+    data.customer_address ||
+    [data.address_line_1, data.address_line_2, data.city, data.state, data.pincode].filter(Boolean).join(", ");
+
+  if (flowAddress && session.pendingOrder) {
+    saveUser(from, { address: flowAddress, lang, customerType: session.customerType });
+    saveSession(from, { address: flowAddress, state: "awaiting_confirm" });
+    await sendFinalConfirmation(from, { ...session, address: flowAddress });
+    return;
+  }
+
+  if (session.state === "collecting_address_flow") {
+    saveSession(from, { state: "awaiting_address" });
+    const msg = {
+      en: "I could not read the address from the native form. Please send your full delivery address here.",
+      hi: "Native form se address read nahi hua. Kripya apna poora delivery address yahan bhejein.",
+      ta: "Native form-இல் முகவரியைப் பெற முடியவில்லை. தயவுசெய்து முழு முகவரியை இங்கே அனுப்பவும்.",
+      te: "Native form నుండి చిరునామా చదవలేకపోయాం. దయచేసి పూర్తి delivery address ఇక్కడ పంపండి.",
+    };
+    await sendText(from, msg[lang] || msg.en);
+    return;
+  }
 
   // Shopping flow completed
   if (data.customer_name && data.order_details && data.address) {
@@ -1020,7 +1117,7 @@ async function handleCatalogOrder(from, session, order) {
 
   // Save to session for address collection
   saveSession(from, {
-    state:        "awaiting_address",
+    state:        "choosing_payment",
     chosenPayment: "COD",
     pendingOrder:  { orderId, items, total, cartItem: items[0] },
   });
@@ -1034,30 +1131,36 @@ ${itemsList}
 
 💰 *Total: ₹${total.toFixed(2)}*
 
-📍 Please send your *delivery address* to confirm the order.`,
+📍 Next, tap below to enter your *delivery address* in the native form.`,
     hi: `🛒 *Order Mila!*
 
 ${itemsList}
 
 💰 *Total: ₹${total.toFixed(2)}*
 
-📍 Order confirm karne ke liye apna *delivery address* bhejein.`,
+📍 Ab neeche tap karke apna *delivery address* native form mein bharein.`,
     ta: `🛒 *ஆர்டர் கிடைத்தது!*
 
 ${itemsList}
 
 💰 *மொத்தம்: ₹${total.toFixed(2)}*
 
-📍 முகவரி அனுப்பவும்.`,
+📍 கீழே தட்டி native form-ல் முகவரியை உள்ளிடவும்.`,
     te: `🛒 *ఆర్డర్ అందింది!*
 
 ${itemsList}
 
 💰 *మొత్తం: ₹${total.toFixed(2)}*
 
-📍 డెలివరీ చిరునామా పంపండి.`,
+📍 ఇప్పుడు కింద నొక్కి native form లో డెలివరీ చిరునామా ఇవ్వండి.`,
   };
   await sendText(from, msg[lang] || msg.en);
+  await requestAddressInNativeUI(from, {
+    ...session,
+    lang,
+    chosenPayment: "COD",
+    pendingOrder: { orderId, items, total, cartItem: items[0] },
+  });
 }
 
 // ── Native WhatsApp Cart Order Handler ───────────────────────────────────────
@@ -1084,7 +1187,7 @@ async function handleNativeOrder(from, session, order) {
 
   // Save session with pending order — ask for address next
   saveSession(from, {
-    state:        "awaiting_address",
+    state:        "choosing_payment",
     chosenPayment: "COD",
     pendingOrder: { orderId, cartItem: items[0], items, total },
     cart:         items,
