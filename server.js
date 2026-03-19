@@ -61,8 +61,12 @@ app.get("/admin/orders", adminAuth, async (req, res) => {
   }
 });
 
-app.get("/admin/users", adminAuth, (req, res) => {
-  res.json(getAllUsers());
+app.get("/admin/users", adminAuth, async (req, res) => {
+  try {
+    res.json(await getAllUsers());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 function toFlowCategoryOption(category, lang = "en") {
@@ -258,7 +262,7 @@ async function handleTextMessage(from, session, text) {
     }
     const newAddress = text.trim();
     // Save address to user profile permanently
-    saveUser(from, { address: newAddress, lang, customerType: session.customerType });
+    await saveUser(from, { address: newAddress, lang, customerType: session.customerType });
     saveSession(from, { address: newAddress });
     await sendFinalConfirmation(from, { ...session, address: newAddress });
     return;
@@ -267,7 +271,7 @@ async function handleTextMessage(from, session, text) {
   // Using saved address confirmation
   if (session.state === "confirm_saved_address") {
     if (lower === "yes" || lower === "y" || lower === "haan" || lower === "ha") {
-      const savedAddress = getUserAddress(from);
+      const savedAddress = await getUserAddress(from);
       saveSession(from, { address: savedAddress, state: "awaiting_confirm" });
       await sendFinalConfirmation(from, { ...session, address: savedAddress });
       return;
@@ -410,7 +414,7 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
     await sendText(from, welcome[chosen] || welcome.en);
     // Now ask customer type
     saveSession(from, { lang: chosen, state: "choosing_type", messages: [] });
-    saveUser(from, { lang: chosen });
+    await saveUser(from, { lang: chosen });
     await sendCustomerTypeMenu(from, chosen);
     return;
   }
@@ -568,7 +572,7 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
 
   // Saved address buttons
   if (replyId === "use_saved_address") {
-    const savedAddress = getUserAddress(from);
+    const savedAddress = await getUserAddress(from);
     saveSession(from, { address: savedAddress });
     await sendPaymentMethodMenu(from, { ...session, address: savedAddress });
     return;
@@ -614,7 +618,7 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
     const customerType = replyId === "type_retail" ? "retail" : "wholesale";
     const chosenLang = session.lang || "en";
     saveSession(from, { customerType, state: "browsing" });
-    saveUser(from, { customerType, lang: chosenLang });
+    await saveUser(from, { customerType, lang: chosenLang });
     const msg = {
       retail: {
         en: "🛒 *Retail prices (MRP)* selected. Here is our menu:",
@@ -859,7 +863,7 @@ async function showSummaryThenPay(from, session, paymentMethod) {
   saveSession(from, { chosenPayment: paymentMethod });
 
   // Check if user has a saved address
-  const savedAddress = getUserAddress(from);
+  const savedAddress = await getUserAddress(from);
 
   if (savedAddress) {
     // Ask if they want to use saved address
@@ -1091,8 +1095,9 @@ async function handleFlowResponse(from, session, nfmReply) {
       : flowAddress;
     const chosenPayment = data.payment_method || session.chosenPayment;
 
-    saveUser(from, {
-      name: data.customer_name || getUser(from)?.name,
+    const existingUser = await getUser(from);
+    await saveUser(from, {
+      name: data.customer_name || existingUser?.name,
       address: fullAddress,
       lang,
       customerType: session.customerType,
@@ -1148,7 +1153,7 @@ async function handleFlowResponse(from, session, nfmReply) {
     });
 
     // Save user profile
-    saveUser(from, { address: data.address, customerType, lang });
+    await saveUser(from, { address: data.address, customerType, lang });
 
     const msg = {
       en: `✅ *Order Received!*
@@ -1297,7 +1302,7 @@ async function handleNativeOrder(from, session, order) {
   });
 
   // Save user profile
-  saveUser(from, { lang, customerType: session.customerType || "retail" });
+  await saveUser(from, { lang, customerType: session.customerType || "retail" });
 
   // Show order details exactly like old bot
   const sep = "─────────────────────────────────────────────";
