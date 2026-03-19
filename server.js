@@ -65,6 +65,65 @@ app.get("/admin/users", adminAuth, (req, res) => {
   res.json(getAllUsers());
 });
 
+function toFlowCategoryOption(category, lang = "en") {
+  const title = `${category.emoji} ${category.name[lang] || category.name.en}`;
+  const count = getProductsByCategory(category.id).length;
+  return {
+    id: category.id,
+    title,
+    description: `${count} product${count === 1 ? "" : "s"}`,
+  };
+}
+
+function toFlowProductOption(product, customerType = "retail", lang = "en") {
+  const title = `${product.emoji} ${product.name[lang] || product.name.en}`;
+  const price = getPrice(product, customerType);
+  return {
+    id: product.id,
+    title,
+    description: `Rs.${price} / ${product.unit}`,
+  };
+}
+
+// ── Flow Catalog API ─────────────────────────────────────────────────────────
+app.get("/flow/catalog/categories", (req, res) => {
+  const lang = req.query.lang || "en";
+  res.json({
+    categories: catalog.categories.map(category => toFlowCategoryOption(category, lang)),
+  });
+});
+
+app.get("/flow/catalog/products", (req, res) => {
+  const lang = req.query.lang || "en";
+  const customerType = req.query.customerType === "wholesale" ? "wholesale" : "retail";
+  const categoryId = req.query.category;
+
+  if (!categoryId) {
+    return res.status(400).json({ error: "category query parameter is required" });
+  }
+
+  const products = getProductsByCategory(categoryId);
+  res.json({
+    category: categoryId,
+    products: products.map(product => toFlowProductOption(product, customerType, lang)),
+  });
+});
+
+app.get("/flow/catalog/flow-json", (req, res) => {
+  const lang = req.query.lang || "en";
+  const customerType = req.query.customerType === "wholesale" ? "wholesale" : "retail";
+
+  const categories = catalog.categories.map(category => toFlowCategoryOption(category, lang));
+  const productsByCategory = Object.fromEntries(
+    catalog.categories.map(category => [
+      category.id,
+      getProductsByCategory(category.id).map(product => toFlowProductOption(product, customerType, lang)),
+    ])
+  );
+
+  res.json({ categories, productsByCategory });
+});
+
 // ── Broadcast API ─────────────────────────────────────────────────────────────
 app.post("/admin/broadcast", adminAuth, async (req, res) => {
   const { message, phones } = req.body;
