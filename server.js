@@ -522,6 +522,10 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
     await requestAddressInNativeUI(from, session);
     return;
   }
+  if (replyId === "start_address") {
+    await requestAddressInNativeUI(from, session);
+    return;
+  }
   if (replyId === "confirm_order") {
     await placeConfirmedOrder(from, session);
     return;
@@ -1154,12 +1158,12 @@ ${itemsList}
 
 📍 ఇప్పుడు కింద నొక్కి native form లో డెలివరీ చిరునామా ఇవ్వండి.`,
   };
-  await sendText(from, msg[lang] || msg.en);
-  await requestAddressInNativeUI(from, {
-    ...session,
-    lang,
-    chosenPayment: "COD",
-    pendingOrder: { orderId, items, total, cartItem: items[0] },
+  await sendButtons(from, {
+    bodyText: msg[lang] || msg.en,
+    buttons: [
+      { id: "start_address", title: "Enter Address" },
+      { id: "pay_cancel",    title: "Cancel Order" },
+    ],
   });
 }
 
