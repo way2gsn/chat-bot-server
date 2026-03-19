@@ -23,7 +23,7 @@ const { buildPaymentMessage, generateOrderId } = require("./lib/payment");
 const FLOW_SHOPPING = process.env.FLOW_SHOPPING_ID || "1926551408029255";
 const FLOW_SUPPORT  = process.env.FLOW_SUPPORT_ID  || "1933182807315833";
 const FLOW_ADDRESS  = process.env.FLOW_ADDRESS_ID || process.env.FLOW_SHOPPING_ID || "";
-const FLOW_ADDRESS_SCREEN = process.env.FLOW_ADDRESS_SCREEN || "CHECKOUT";
+const FLOW_ADDRESS_SCREEN = process.env.FLOW_ADDRESS_SCREEN || "WELCOME";
 const { saveOrder, confirmOrder, cancelOrder, updateOrder, getAllOrders, getStats } = require("./lib/orders");
 const { getUser, saveUser, getUserAddress, getAllUsers } = require("./lib/users");
 const { markRead, sendText, sendImage, sendProductCard, sendMainMenu, sendCategoriesMenu, sendProductsMenu, sendButtons, sendListMenu, sendFlow, sendFlowTemplate, sendCatalogLink } = require("./lib/whatsapp");
@@ -653,6 +653,7 @@ async function sendOrderHistory(from, session) {
 async function requestAddressInNativeUI(from, session) {
   const { lang = "en", pendingOrder, chosenPayment } = session;
   const total = pendingOrder?.total || 0;
+  const safeFlowScreen = /^[A-Z_]+$/.test(FLOW_ADDRESS_SCREEN) ? FLOW_ADDRESS_SCREEN : "WELCOME";
   const body = {
     en: `Please complete your delivery details in the native form.\nOrder total: Rs.${total}`,
     hi: `Kripya native form mein apni delivery details bharein.\nOrder total: Rs.${total}`,
@@ -668,7 +669,7 @@ async function requestAddressInNativeUI(from, session) {
       bodyText: body[lang] || body.en,
       footerText: "Phasal Bazar Checkout",
       buttonText: "Provide Address",
-      screenName: FLOW_ADDRESS_SCREEN,
+      screenName: safeFlowScreen,
     });
     return;
   }
