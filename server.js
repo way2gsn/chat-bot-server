@@ -391,6 +391,7 @@ async function handleTextMessage(from, session, text) {
   const m = text.match(/order\s+([A-Za-z]\d{3})(?:\s+(\d+))?/i);
   if (m) { await initiateOrder(from, session, m[1].toUpperCase(), parseInt(m[2]||"1")); return; }
 
+  const result = await getAllOrders({ search: from });
   const { reply, updatedMessages } = await getAIReply(session, text);
   await sendText(from, reply);
   saveSession(from, { messages: updatedMessages });
@@ -697,7 +698,7 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
 // ── Order history ─────────────────────────────────────────────────────────────
 async function sendOrderHistory(from, session) {
   const { lang } = session;
-  const result = getAllOrders({ search: from });
+  const result = await getAllOrders({ search: from });
   const orders = (Array.isArray(result) ? result : []).slice(0, 5);
   if (!orders.length) {
     await sendText(from, lang === "hi" ? "Aapka koi order nahi hai." : "You have no recent orders.");
