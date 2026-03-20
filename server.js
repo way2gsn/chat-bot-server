@@ -130,26 +130,26 @@ app.get("/flow/catalog/flow-json", (req, res) => {
 
 // ── Broadcast API ─────────────────────────────────────────────────────────────
 app.post("/admin/broadcast", adminAuth, async (req, res) => {
-  const { message, phones } = req.body;
-  if (!message || !phones || !phones.length) {
-    return res.status(400).json({ error: "message and phones required" });
-  }
-
-  const results = { sent: 0, failed: 0, errors: [] };
-
-  for (const phone of phones) {
-    try {
-      await sendText(phone, message);
-      results.sent++;
-      // Small delay to avoid rate limiting
-      await new Promise(r => setTimeout(r, 500));
-    } catch (err) {
-      results.failed++;
-      results.errors.push({ phone, error: err.message });
+  try {
+    const { phones, template, data } = req.body;
+    if (!Array.isArray(phones) || !template) return res.status(400).json({ error: "Missing phones or template" });
+    const results = { sent: 0, failed: 0, errors: [] };
+    for (const phone of phones) {
+      try {
+        // Use fillTemplate to replace variables in the template
+        const message = fillTemplate(template, typeof data === 'object' && data[phone] ? data[phone] : data || {});
+        await sendText(phone, message);
+        results.sent++;
+        await new Promise(r => setTimeout(r, 500));
+      } catch (err) {
+        results.failed++;
+        results.errors.push({ phone, error: err.message });
+      }
     }
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-
-  res.json(results);
 });
 
 app.patch("/admin/orders/:orderId", adminAuth, async (req, res) => {
@@ -165,6 +165,13 @@ app.patch("/admin/orders/:orderId", adminAuth, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Utility: Replace {{var}} in template with values from data object
+function fillTemplate(template, data) {
+  return template.replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (m, key) =>
+    data[key] !== undefined ? data[key] : m
+  );
+}
 
 // ── WhatsApp Webhook ──────────────────────────────────────────────────────────
 app.get("/webhook", (req, res) => {
@@ -554,7 +561,7 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
       await sendText(from, msg[lang] || msg.en);
       return;
     }
-    const total   = cart.reduce((s, i) => s + i.subtotal, 0);
+    const total = cart.reduce((s, i) => s + i.subtotal, 0);
     const orderId = generateOrderId();
     saveSession(from, { state: "awaiting_address_start", pendingOrder: { orderId, cartItem: cart[0], items: cart, total } });
     await sendAddressStartPrompt(from, {
