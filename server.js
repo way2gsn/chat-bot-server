@@ -901,15 +901,18 @@ async function sendFinalConfirmation(from, session) {
   const { lang, pendingOrder, chosenPayment, address } = session;
   if (!pendingOrder) { await sendText(from, "No pending order."); return; }
   const { cartItem, total } = pendingOrder;
+  const items = pendingOrder.items || [cartItem];
 
   const ptype = session.customerType === "wholesale" ? "🏪 Wholesale" : "🛒 Retail";
+  const itemLines = items.map(item => {
+    const linePrice = item.price || (item.qty ? (item.subtotal / item.qty) : item.subtotal);
+    return `${item.emoji} *${item.name}*\n   Qty: ${item.qty}  |  Price: ₹${linePrice} each\n   Subtotal: ₹${item.subtotal}`;
+  }).join("\n");
 
   const summary = {
     en: `🧾 *Final Order Summary*
 ─────────────────────
-${cartItem.emoji} *${cartItem.name}*
-   Qty: ${cartItem.qty}  |  Price: ₹${cartItem.price} each
-   Subtotal: ₹${total}
+${itemLines}
 ─────────────────────
 💳 Payment: *${chosenPayment}*
 🏷️ Type: ${ptype}
@@ -919,9 +922,7 @@ Tap below to confirm or cancel your order.`,
 
     hi: `🧾 *Final Order Summary*
 ─────────────────────
-${cartItem.emoji} *${cartItem.name}*
-   Qty: ${cartItem.qty}  |  Price: ₹${cartItem.price} each
-   Subtotal: ₹${total}
+${itemLines}
 ─────────────────────
 💳 Payment: *${chosenPayment}*
 🏷️ Type: ${ptype}
@@ -931,9 +932,7 @@ Neeche tap karke order confirm ya cancel karein.`,
 
     ta: `🧾 *இறுதி ஆர்டர் விவரம்*
 ─────────────────────
-${cartItem.emoji} *${cartItem.name}*
-   Qty: ${cartItem.qty}  |  விலை: ₹${cartItem.price}
-   மொத்தம்: ₹${total}
+${itemLines}
 ─────────────────────
 💳 கட்டணம்: *${chosenPayment}*
 📍 முகவரி: ${address}
@@ -942,9 +941,7 @@ ${cartItem.emoji} *${cartItem.name}*
 
     te: `🧾 *తుది ఆర్డర్ వివరాలు*
 ─────────────────────
-${cartItem.emoji} *${cartItem.name}*
-   Qty: ${cartItem.qty}  |  ధర: ₹${cartItem.price}
-   మొత్తం: ₹${total}
+${itemLines}
 ─────────────────────
 💳 చెల్లింపు: *${chosenPayment}*
 📍 చిరునామా: ${address}
@@ -1046,13 +1043,15 @@ async function handleCODPayment(from, session) {
   const { lang, pendingOrder } = session;
   if (!pendingOrder) { await sendText(from, "No pending order."); return; }
   const { orderId, cartItem, total } = pendingOrder;
-  await saveOrder({ orderId, customerPhone: from, items: [cartItem], total, paymentMethod: "COD", lang });
+  const items = pendingOrder.items || [cartItem];
+  await saveOrder({ orderId, customerPhone: from, items, total, paymentMethod: "COD", lang });
   saveSession(from, { state: "idle", cart: [], pendingOrder: null });
+  const itemLines = items.map(item => `${item.emoji} ${item.name} × ${item.qty}`).join("\n");
   const msg = {
-    en: `✅ *Order Confirmed!*\n\nOrder ID: *${orderId}*\n${cartItem.emoji} ${cartItem.name} × ${cartItem.qty}\n💰 ₹${total} — Pay on delivery\n\nDelivery in 2-3 days. We'll contact you soon! 🌾`,
-    hi: `✅ *Order Confirm!*\n\nOrder ID: *${orderId}*\n${cartItem.emoji} ${cartItem.name} × ${cartItem.qty}\n💰 ₹${total} — Delivery par cash\n\n2-3 din mein delivery. Hum jald contact karenge! 🌾`,
-    ta: `✅ *ஆர்டர் உறுதி!*\n\nOrder ID: *${orderId}*\n${cartItem.emoji} ${cartItem.name} × ${cartItem.qty}\n💰 ₹${total} — டெலிவரியில் பணம்\n\n2-3 நாட்களில் டெலிவரி! 🌾`,
-    te: `✅ *ఆర్డర్ నిర్ధారణ!*\n\nOrder ID: *${orderId}*\n${cartItem.emoji} ${cartItem.name} × ${cartItem.qty}\n💰 ₹${total} — డెలివరీలో చెల్లింపు\n\n2-3 రోజుల్లో డెలివరీ! 🌾`,
+    en: `✅ *Order Confirmed!*\n\nOrder ID: *${orderId}*\n${itemLines}\n💰 ₹${total} — Pay on delivery\n\nDelivery in 2-3 days. We'll contact you soon! 🌾`,
+    hi: `✅ *Order Confirm!*\n\nOrder ID: *${orderId}*\n${itemLines}\n💰 ₹${total} — Delivery par cash\n\n2-3 din mein delivery. Hum jald contact karenge! 🌾`,
+    ta: `✅ *ஆர்டர் உறுதி!*\n\nOrder ID: *${orderId}*\n${itemLines}\n💰 ₹${total} — டெலிவரியில் பணம்\n\n2-3 நாட்களில் டெலிவரி! 🌾`,
+    te: `✅ *ఆర్డర్ నిర్ధారణ!*\n\nOrder ID: *${orderId}*\n${itemLines}\n💰 ₹${total} — డెలివరీలో చెల్లింపు\n\n2-3 రోజుల్లో డెలివరీ! 🌾`,
   };
   await sendText(from, msg[lang] || msg.en);
 }
