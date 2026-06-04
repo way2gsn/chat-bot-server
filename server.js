@@ -66,6 +66,49 @@ function adminAuth(req, res, next) {
 // ── Health check ──────────────────────────────────────────────────────────────
 app.get("/", (req, res) => res.json({ status: "Phasal Bazar Bot running 🌾" }));
 
+app.get("/pay", (req, res) => {
+  const target = req.query.url;
+  if (!target || !target.startsWith("upi://")) {
+    return res.status(400).send("Invalid payment URL");
+  }
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Redirecting to Payment...</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 50px 20px; background-color: #f8fafc; color: #0f172a; }
+        .card { max-width: 400px; margin: 0 auto; background: white; padding: 30px; border-radius: 16px; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1); }
+        .logo { font-size: 48px; margin-bottom: 10px; }
+        .spinner { border: 4px solid #f1f5f9; border-top: 4px solid #16a34a; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 20px auto; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .btn { display: inline-block; padding: 14px 28px; background: #16a34a; color: white; text-decoration: none; border-radius: 10px; font-weight: bold; margin-top: 20px; transition: background 0.2s; }
+        .btn:hover { background: #15803d; }
+        p { color: #475569; font-size: 15px; line-height: 1.5; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <div class="logo">🌾</div>
+        <h2>Opening UPI Apps...</h2>
+        <div class="spinner"></div>
+        <p>We are redirecting you to your payment app. If it doesn't open automatically, please tap the button below:</p>
+        <a href="${target}" class="btn">Pay Now</a>
+      </div>
+      <script>
+        // Attempt redirect immediately
+        window.location.href = "${target}";
+        // Fallback redirect after a short delay
+        setTimeout(function() {
+          window.location.href = "${target}";
+        }, 800);
+      </script>
+    </body>
+    </html>
+  `);
+});
+
 // ── Admin API routes ──────────────────────────────────────────────────────────
 app.get("/admin/stats", adminAuth, async (req, res) => {
   try {
