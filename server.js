@@ -287,6 +287,9 @@ app.post("/webhook", async (req, res) => {
   res.status(200).end();
   try {
     const value = req.body?.entry?.[0]?.changes?.[0]?.value;
+    if (value?.statuses) {
+      console.log("ℹ️ Webhook status update received:", JSON.stringify(value.statuses, null, 2));
+    }
     if (!value?.messages) return;
 
     const msg     = value.messages[0];
