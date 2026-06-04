@@ -287,15 +287,6 @@ app.post("/webhook", async (req, res) => {
       await handleCatalogOrder(from, session, msg.order);
       return;
     }
-    if (msgType === "interactive" && msg.interactive?.type === "button_reply") {
-      const payload = msg.interactive.button_reply?.id || "";
-      if (payload === "START_SHOPPING") {
-        // Customer tapped "Start Shopping" from template
-        saveSession(from, { state: "browsing", lang: session.lang || "en", customerType: session.customerType || "retail" });
-        await sendMainMenu(from, session.lang || "en", k => t(session.lang || "en", k));
-        return;
-      }
-    }
     if (msgType === "image") { await handlePaymentScreenshot(from, session); return; }
     if (msgType === "order") { await handleNativeOrder(from, session, msg.order); return; }
   } catch (err) { console.error("Webhook error:", err.message, err.stack); }
@@ -479,6 +470,13 @@ async function handleTextMessage(from, session, text) {
 
 // ── Interactive reply handler ─────────────────────────────────────────────────
 async function handleInteractiveReply(from, session, replyId, replyTitle) {
+
+  if (replyId === "START_SHOPPING") {
+    const chosenLang = session.lang || "en";
+    saveSession(from, { state: "browsing", lang: chosenLang, customerType: session.customerType || "retail" });
+    await sendMainMenu(from, chosenLang, k => t(chosenLang, k));
+    return;
+  }
 
   // Language selection
   if (replyId.startsWith("lang_")) {
