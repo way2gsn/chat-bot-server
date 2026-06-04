@@ -147,10 +147,9 @@ async function handleTextMessage(from, session, text) {
     return;
   }
 
-  // AI handles everything else
-  const { reply, updatedMessages } = await getAIReply(session, text);
-  await sendText(from, reply);
-  saveSession(from, { messages: updatedMessages });
+  // Default fallback: show main menu instead of AI
+  await sendMainMenu(from, lang, (key) => t(lang, key));
+  saveSession(from, { lang, state: "browsing", messages: [] });
 }
 
 // Handle interactive list/button replies

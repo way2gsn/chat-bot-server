@@ -1,5 +1,30 @@
+const fs = require("fs");
+const path = require("path");
+
+// Load local .env file if it exists
+try {
+  const envPath = path.join(__dirname, ".env");
+  if (fs.existsSync(envPath)) {
+    const envConfig = fs.readFileSync(envPath, "utf-8");
+    envConfig.split("\n").forEach(line => {
+      const match = line.match(/^\s*([\w.-]+)\s*=\s*(.*)?\s*$/);
+      if (match) {
+        const key = match[1];
+        let value = match[2] || "";
+        if (value.length > 0 && value.startsWith('"') && value.endsWith('"')) {
+          value = value.substring(1, value.length - 1);
+        } else if (value.length > 0 && value.startsWith("'") && value.endsWith("'")) {
+          value = value.substring(1, value.length - 1);
+        }
+        process.env[key] = value.trim();
+      }
+    });
+  }
+} catch (err) {
+  console.warn("Failed to load .env file:", err.message);
+}
+
 const express = require("express");
-const path    = require("path");
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
@@ -26,7 +51,7 @@ const FLOW_ADDRESS  = process.env.FLOW_ADDRESS_ID || process.env.FLOW_SHOPPING_I
 const FLOW_ADDRESS_SCREEN = process.env.FLOW_ADDRESS_SCREEN || "WELCOME";
 const { saveOrder, confirmOrder, cancelOrder, updateOrder, getAllOrders, getStats } = require("./lib/orders");
 const { getUser, saveUser, getUserAddress, getAllUsers } = require("./lib/users");
-const { markRead, sendText, sendImage, sendProductCard, sendMainMenu, sendCategoriesMenu, sendProductsMenu, sendButtons, sendListMenu, sendFlow, sendFlowTemplate, sendCatalogLink } = require("./lib/whatsapp");
+const { markRead, sendText, sendImage, sendProductCard, sendMainMenu, sendCategoriesMenu, sendProductsMenu, sendButtons, sendListMenu, sendFlow, sendTemplate, sendCatalogLink } = require("./lib/whatsapp");
 
 const PORT         = process.env.PORT || 3000;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "phasalbazar2024";
@@ -138,7 +163,11 @@ app.post("/admin/broadcast", adminAuth, async (req, res) => {
     for (const phone of phones) {
       try {
         if (useTemplate) {
-          await sendFlowTemplate(phone, { templateName: templateName || "phasal_bazar_shopping", language: "en" });
+          const isShopping = (templateName || "phasal_bazar_shopping") === "phasal_bazar_shopping";
+          await sendTemplate(phone, templateName || "phasal_bazar_shopping", {
+            hasQuickReply: isShopping,
+            language: "en"
+          });
         } else {
           // Use fillTemplate to replace variables in the template
           const message = fillTemplate(template, typeof data === 'object' && data[phone] ? data[phone] : data || {});
@@ -165,6 +194,38 @@ app.patch("/admin/orders/:orderId", adminAuth, async (req, res) => {
     if (orderStatus)   updates.orderStatus   = orderStatus;
     if (paymentStatus) updates.paymentStatus = paymentStatus;
     await updateOrder(orderId, updates);
+
+    // Retrieve order details to send automated template message
+    try {
+      const orders = await getAllOrders();
+      const order = orders.find(o => o.orderId === orderId);
+      if (order && orderStatus) {
+        const phone = order.customerPhone;
+        const name = order.customerName || "Customer";
+        const total = order.total || 0;
+        const dateStr = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toLocaleDateString("en-IN", { day: "numeric", month: "long" });
+
+        if (orderStatus === "confirmed") {
+          // Variables: {{1}} Customer Name, {{2}} Order ID, {{3}} Total, {{4}} Delivery Date
+          await sendTemplate(phone, "phasal_bazar_order_confirmed", {
+            parameters: [name, orderId, total, dateStr]
+          });
+        } else if (orderStatus === "delivered") {
+          // Variables: {{1}} Customer Name, {{2}} Order ID
+          await sendTemplate(phone, "phasal_bazar_order_delivered", {
+            parameters: [name, orderId]
+          });
+        } else if (orderStatus === "cancelled") {
+          // Variables: {{1}} Customer Name, {{2}} Order ID
+          await sendTemplate(phone, "phasal_bazar_order_cancelled", {
+            parameters: [name, orderId]
+          });
+        }
+      }
+    } catch (err) {
+      console.error("Failed to send automated status template:", err.message);
+    }
+
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -403,10 +464,9 @@ async function handleTextMessage(from, session, text) {
   const m = text.match(/order\s+([A-Za-z]\d{3})(?:\s+(\d+))?/i);
   if (m) { await initiateOrder(from, session, m[1].toUpperCase(), parseInt(m[2]||"1")); return; }
 
-  const result = await getAllOrders({ search: from });
-  const { reply, updatedMessages } = await getAIReply(session, text);
-  await sendText(from, reply);
-  saveSession(from, { messages: updatedMessages });
+  // Default fallback: show main menu instead of AI
+  saveSession(from, { state: "browsing", lang: lang || "en", customerType: session.customerType || "retail", messages: [] });
+  await sendMainMenu(from, lang || "en", k => t(lang || "en", k));
 }
 
 // ── Interactive reply handler ─────────────────────────────────────────────────
