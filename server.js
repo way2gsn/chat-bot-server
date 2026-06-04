@@ -113,6 +113,12 @@ app.get("/pay", (req, res) => {
 app.get("/admin/stats", adminAuth, async (req, res) => {
   try {
     const stats = await getStats();
+    try {
+      const users = await getAllUsers();
+      stats.usersCount = users.length;
+    } catch (e) {
+      stats.usersCount = 0;
+    }
     res.json(stats);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -403,6 +409,7 @@ async function handleTextMessage(from, session, text) {
       saveSession(from, { state: "idle", cart: [], pendingOrder: null, address: null });
       const msg = { en: "❌ Order cancelled.", hi: "❌ Cancel ho gaya.", ta: "❌ ரத்து.", te: "❌ రద్దు." };
       await sendText(from, msg[lang] || msg.en);
+      await sendMainMenu(from, lang || "en", k => t(lang || "en", k));
       return;
     }
     if (text.trim().length < 5) {
@@ -441,8 +448,9 @@ async function handleTextMessage(from, session, text) {
     }
     if (cancels.some(w => lower.includes(w))) {
       saveSession(from, { state: "idle", cart: [], pendingOrder: null, address: null });
-      const msg = { en: "❌ Order cancelled. Type *Hi* to start again.", hi: "❌ Order cancel. *Hi* likhein dobara shuru karne ke liye.", ta: "❌ ரத்து. மீண்டும் தொடங்க *Hi* என்று அனுப்பவும்.", te: "❌ రద్దు. మళ్ళీ ప్రారంభించడానికి *Hi* అని పంపండి." };
+      const msg = { en: "❌ Order cancelled.", hi: "❌ Order cancel ho gaya.", ta: "❌ ஆர்டர் ரத்து செய்யப்பட்டது.", te: "❌ ఆర్డర్ రద్దు చేయబడింది." };
       await sendText(from, msg[lang] || msg.en);
+      await sendMainMenu(from, lang || "en", k => t(lang || "en", k));
       return;
     }
     // Not understood — remind clearly
@@ -508,6 +516,7 @@ async function handleTextMessage(from, session, text) {
       saveSession(from, { state: "idle", cart: [], pendingOrder: null });
       const cm = { en: "❌ Order cancelled.", hi: "❌ Cancel ho gaya.", ta: "❌ ரத்து.", te: "❌ రద్దు." };
       await sendText(from, cm[lang] || cm.en);
+      await sendMainMenu(from, lang || "en", k => t(lang || "en", k));
       return;
     }
     await sendButtons(from, {
@@ -758,6 +767,7 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
       };
       await sendText(from, msg[lang] || msg.en);
       saveSession(from, { state: "idle", cart: [], pendingOrder: null, address: null });
+      await sendMainMenu(from, lang || "en", k => t(lang || "en", k));
     }
     return;
   }
@@ -767,6 +777,7 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
     saveSession(from, { state: "idle", cart: [], pendingOrder: null, address: null });
     const msg = { en: "❌ Order cancelled.", hi: "❌ Order cancel ho gaya.", ta: "❌ ஆர்டர் ரத்து.", te: "❌ ఆర్డర్ రద్దు." };
     await sendText(from, msg[lang] || msg.en);
+    await sendMainMenu(from, lang || "en", k => t(lang || "en", k));
     return;
   }
 
@@ -820,6 +831,7 @@ async function handleInteractiveReply(from, session, replyId, replyTitle) {
     saveSession(from, { state: "idle", cart: [], pendingOrder: null });
     const msg = { en: "❌ Order cancelled.", hi: "❌ Order cancel ho gaya.", ta: "❌ ஆர்டர் ரத்து.", te: "❌ ఆర్డర్ రద్దు." };
     await sendText(from, msg[lang] || msg.en);
+    await sendMainMenu(from, lang || "en", k => t(lang || "en", k));
     return;
   }
 
@@ -916,21 +928,40 @@ async function requestAddressInNativeUI(from, session) {
 async function sendAddressStartPrompt(from, session) {
   const { lang = "en", pendingOrder } = session;
   const total = pendingOrder?.total || 0;
-  const msg = {
-    en: `🛒 *Order Received!*\n\n💰 *Total: ₹${total.toFixed ? total.toFixed(2) : total}*\n\nTap below to provide your delivery details.`,
-    hi: `🛒 *Order Mila!*\n\n💰 *Total: ₹${total.toFixed ? total.toFixed(2) : total}*\n\nApni delivery details dene ke liye neeche tap karein.`,
-    ta: `🛒 *ஆர்டர் கிடைத்தது!*\n\n💰 *மொத்தம்: ₹${total.toFixed ? total.toFixed(2) : total}*\n\nடெலிவரி விவரங்களை வழங்க கீழே தட்டவும்.`,
-    te: `🛒 *ఆర్డర్ అందింది!*\n\n💰 *మొత్తం: ₹${total.toFixed ? total.toFixed(2) : total}*\n\nడెలివరీ వివరాలు ఇవ్వడానికి కింద నొక్కండి.`,
-  };
+  const savedAddress = await getUserAddress(from);
 
-  saveSession(from, { state: "awaiting_address_start" });
-  await sendButtons(from, {
-    bodyText: msg[lang] || msg.en,
-    buttons: [
-      { id: "start_address", title: "Checkout Details" },
-      { id: "pay_cancel",    title: "Cancel Order" },
-    ],
-  });
+  if (savedAddress) {
+    const msg = {
+      en: `🛒 *Order Received!*\n\n💰 *Total: ₹${total.toFixed ? total.toFixed(2) : total}*\n\n📍 *Saved Address:*\n_${savedAddress}_\n\nWould you like to use this address or enter a new one?`,
+      hi: `🛒 *Order Mila!*\n\n💰 *Total: ₹${total.toFixed ? total.toFixed(2) : total}*\n\n📍 *Saved Address mila:*\n_${savedAddress}_\n\nKya aap isi address par delivery chahte hain ya naya address dena chahte hain?`,
+      ta: `🛒 *ஆர்டர் கிடைத்தது!*\n\n💰 *மொத்தம்: ₹${total.toFixed ? total.toFixed(2) : total}*\n\n📍 *சேமிக்கப்பட்ட முகவரி:*\n_${savedAddress}_\n\nஇதை பயன்படுத்த விரும்புகிறீர்களா அல்லது புதிய முகவரியை உள்ளிட விரும்புகிறீர்களா?`,
+      te: `🛒 *ఆర్డర్ అందింది!*\n\n💰 *మొత్తం: ₹${total.toFixed ? total.toFixed(2) : total}*\n\n📍 *సేవ్ చేసిన చిరునామా:*\n_${savedAddress}_\n\nమీరు ఈ చిరునామాను ఉపయోగించాలనుకుంటున్నారా లేదా కొత్త చిరునామాను నమోదు చేయాలనుకుంటున్నారా?`,
+    };
+    saveSession(from, { state: "awaiting_saved_address_choice" });
+    await sendButtons(from, {
+      bodyText: msg[lang] || msg.en,
+      buttons: [
+        { id: "use_saved_address", title: "Use Saved Address" },
+        { id: "new_address",        title: "New Address" },
+        { id: "pay_cancel",          title: "Cancel Order" },
+      ],
+    });
+  } else {
+    const msg = {
+      en: `🛒 *Order Received!*\n\n💰 *Total: ₹${total.toFixed ? total.toFixed(2) : total}*\n\nTap below to provide your delivery details.`,
+      hi: `🛒 *Order Mila!*\n\n💰 *Total: ₹${total.toFixed ? total.toFixed(2) : total}*\n\nApni delivery details dene ke liye neeche tap karein.`,
+      ta: `🛒 *ஆர்டர் கிடைத்தது!*\n\n💰 *மொத்தம்: ₹${total.toFixed ? total.toFixed(2) : total}*\n\nடெலிவரி விவரங்களை வழங்க கீழே தட்டவும்.`,
+      te: `🛒 *ఆర్డర్ అందింది!*\n\n💰 *మొత్తం: ₹${total.toFixed ? total.toFixed(2) : total}*\n\nడెలివరీ వివరాలు ఇవ్వడానికి కింద నొక్కండి.`,
+    };
+    saveSession(from, { state: "awaiting_address_start" });
+    await sendButtons(from, {
+      bodyText: msg[lang] || msg.en,
+      buttons: [
+        { id: "start_address", title: "Checkout Details" },
+        { id: "pay_cancel",    title: "Cancel Order" },
+      ],
+    });
+  }
 }
 
 async function sendPaymentMethodMenu(from, session) {
@@ -1194,6 +1225,7 @@ async function placeConfirmedOrder(from, session) {
         { id: "action_support", title: "Contact support" },
       ],
     });
+    await sendMainMenu(from, lang || "en", k => t(lang || "en", k));
   }
 }
 
@@ -1240,6 +1272,7 @@ async function handleCODPayment(from, session) {
     te: `✅ *ఆర్డర్ నిర్ధారణ!*\n\nOrder ID: *${orderId}*\n${itemLines}\n💰 ₹${total} — డెలివరీలో చెల్లింపు\n\n2-3 రోజుల్లో డెలివరీ! 🌾`,
   };
   await sendText(from, msg[lang] || msg.en);
+  await sendMainMenu(from, lang || "en", k => t(lang || "en", k));
 }
 
 // ── Payment screenshot ────────────────────────────────────────────────────────
