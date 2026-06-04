@@ -42,7 +42,7 @@ const { detectLanguage, t }                         = require("./lib/lang");
 const { catalog, getProductById, getProductsByCategory, getCatalogText, getPrice } = require("./lib/catalog");
 const { getSession, saveSession }                   = require("./lib/session");
 const { getAIReply }                                = require("./lib/claude");
-const { buildPaymentMessage, generateOrderId } = require("./lib/payment");
+const { buildPaymentMessage, generateOrderId, generatePhonePeLink } = require("./lib/payment");
 
 // ── WhatsApp Flow IDs ─────────────────────────────────────────────────────────
 const FLOW_SHOPPING = process.env.FLOW_SHOPPING_ID || "1926551408029255";
@@ -51,7 +51,7 @@ const FLOW_ADDRESS  = process.env.FLOW_ADDRESS_ID || process.env.FLOW_SHOPPING_I
 const FLOW_ADDRESS_SCREEN = process.env.FLOW_ADDRESS_SCREEN || "WELCOME";
 const { saveOrder, confirmOrder, cancelOrder, updateOrder, getAllOrders, getStats } = require("./lib/orders");
 const { getUser, saveUser, getUserAddress, getAllUsers } = require("./lib/users");
-const { markRead, sendText, sendImage, sendProductCard, sendMainMenu, sendCategoriesMenu, sendProductsMenu, sendButtons, sendListMenu, sendFlow, sendTemplate, sendCatalogLink } = require("./lib/whatsapp");
+const { markRead, sendText, sendImage, sendProductCard, sendMainMenu, sendCategoriesMenu, sendProductsMenu, sendButtons, sendListMenu, sendFlow, sendTemplate, sendCatalogLink, sendUrlButton } = require("./lib/whatsapp");
 
 const PORT         = process.env.PORT || 3000;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "phasalbazar2024";
@@ -810,6 +810,14 @@ async function requestAddressInNativeUI(from, session) {
   };
 
   if (FLOW_ADDRESS) {
+    const existingUser = await getUser(from);
+    const payload = {
+      customer_name: existingUser?.name || "",
+      address: existingUser?.address || "",
+      customer_address: existingUser?.address || "",
+      phone: from
+    };
+
     saveSession(from, { state: "collecting_address_flow" });
     await sendFlow(from, {
       flowId: FLOW_ADDRESS,
@@ -818,6 +826,7 @@ async function requestAddressInNativeUI(from, session) {
       footerText: "Phasal Bazar Checkout",
       buttonText: "Provide Address",
       screenName: safeFlowScreen,
+      payload: payload
     });
     return;
   }
@@ -1057,7 +1066,19 @@ async function placeConfirmedOrder(from, session) {
 
   if (chosenPayment === "UPI") {
     saveSession(from, { state: "awaiting_payment" });
-    await sendText(from, buildPaymentMessage({ lang, items, total, orderId }));
+    const payUrl = generatePhonePeLink({ amount: total, orderId });
+    const paymentText = buildPaymentMessage({ lang, items, total, orderId });
+    const buttonLabels = {
+      en: "💳 Pay via UPI/PhonePe",
+      hi: "💳 UPI/PhonePe se pay karein",
+      ta: "💳 UPI/PhonePe மூலம் செலுத்த",
+      te: "💳 UPI/PhonePe ద్వారా చెల్లించండి"
+    };
+    await sendUrlButton(from, {
+      bodyText: paymentText,
+      buttonLabel: buttonLabels[lang] || buttonLabels.en,
+      url: payUrl
+    });
     // Send QR code if manually configured in Railway env vars
     if (process.env.UPI_QR_IMAGE_URL) {
       const qrCaption = { en: "📱 *Scan to pay instantly*", hi: "📱 *Scan karke pay karein*", ta: "📱 *Scan செய்து pay செய்யவும்*", te: "📱 *Scan చేసి pay చేయండి*" };
@@ -1109,10 +1130,25 @@ async function handleUPIPayment(from, session) {
   const { lang, pendingOrder } = session;
   if (!pendingOrder) { await sendText(from, "No pending order."); return; }
   const { orderId, cartItem, total } = pendingOrder;
-  await saveOrder({ orderId, customerPhone: from, customerName: session.customerName || null, items: [cartItem], total, paymentMethod: "UPI", lang });
+  const items = pendingOrder.items || [cartItem];
+  await saveOrder({ orderId, customerPhone: from, customerName: session.customerName || null, items, total, paymentMethod: "UPI", lang });
   saveSession(from, { state: "awaiting_payment" });
-  await sendText(from, buildPaymentMessage({ lang, items: [cartItem], total, orderId }));
-  const msg = { en: "📸 Send payment screenshot to confirm your order.", hi: "📸 Screenshot bhejein order confirm karne ke liye.", ta: "📸 Screenshot anupungal.", te: "📸 Screenshot pamandi." };
+
+  const payUrl = generatePhonePeLink({ amount: total, orderId });
+  const paymentText = buildPaymentMessage({ lang, items, total, orderId });
+  const buttonLabels = {
+    en: "💳 Pay via UPI/PhonePe",
+    hi: "💳 UPI/PhonePe se pay karein",
+    ta: "💳 UPI/PhonePe மூலம் செலுத்த",
+    te: "💳 UPI/PhonePe ద్వారా చెల్లించండి"
+  };
+  await sendUrlButton(from, {
+    bodyText: paymentText,
+    buttonLabel: buttonLabels[lang] || buttonLabels.en,
+    url: payUrl
+  });
+
+  const msg = { en: "📸 Send payment screenshot here to confirm your order.", hi: "📸 Screenshot bhejein order confirm karne ke liye.", ta: "📸 Screenshot anupungal.", te: "📸 Screenshot pamandi." };
   await sendText(from, msg[lang] || msg.en);
 }
 
