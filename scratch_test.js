@@ -1,7 +1,7 @@
 const https = require('https');
 
 const options = {
-  hostname: 'phasalbazar.up.railway.app',
+  hostname: 'api.phasalbazar.com',
   port: 443,
   path: '/admin/stats',
   method: 'GET',
