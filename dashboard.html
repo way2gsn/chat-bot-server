@@ -479,7 +479,14 @@ async function update(orderId, status) {
 
 window.onload = function() {
   let a, t;
-  try { a = localStorage.getItem("pb_api"); t = localStorage.getItem("pb_token"); } catch{}
+  try {
+    a = localStorage.getItem("pb_api");
+    t = localStorage.getItem("pb_token");
+    if (a && (a.includes("chat-bot-server-production-2ace") || a.includes("phasalbazar.up.railway.app"))) {
+      a = "https://api.phasalbazar.com";
+      localStorage.setItem("pb_api", a);
+    }
+  } catch{}
   if (a && t) {
     document.getElementById("apiUrl").value  = a;
     document.getElementById("apiPass").value = t;
