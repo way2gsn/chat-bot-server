@@ -51,7 +51,7 @@ const FLOW_SUPPORT  = process.env.FLOW_SUPPORT_ID  || "1933182807315833";
 const FLOW_ADDRESS  = process.env.FLOW_ADDRESS_ID || process.env.FLOW_SHOPPING_ID || "";
 const FLOW_ADDRESS_SCREEN = process.env.FLOW_ADDRESS_SCREEN || "WELCOME";
 const { saveOrder, confirmOrder, cancelOrder, updateOrder, getAllOrders, getStats } = require("./lib/orders");
-const { getUser, saveUser, getUserAddress, getAllUsers } = require("./lib/users");
+const { getUser, saveUser, getUserAddress, getAllUsers, importUsers } = require("./lib/users");
 const rawWhatsapp = require("./lib/whatsapp");
 const { markRead, sendProductCard, sendMainMenu, sendCategoriesMenu, sendProductsMenu, sendFlow, sendUrlButton } = rawWhatsapp;
 
@@ -313,6 +313,20 @@ app.get("/admin/users", adminAuth, async (req, res) => {
   try {
     res.json(await getAllUsers());
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/admin/users/import", adminAuth, async (req, res) => {
+  try {
+    const { users } = req.body;
+    if (!Array.isArray(users)) {
+      return res.status(400).json({ error: "Invalid body. Expected 'users' array." });
+    }
+    const imported = await importUsers(users);
+    res.json({ success: true, count: imported.length, users: imported });
+  } catch (err) {
+    console.error("Error importing users:", err);
     res.status(500).json({ error: err.message });
   }
 });
