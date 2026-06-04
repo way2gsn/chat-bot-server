@@ -33,13 +33,14 @@ app.use(express.static(path.join(__dirname)));
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", process.env.DASHBOARD_URL || "*");
   res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.header("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS");
   if (req.method === "OPTIONS") return res.sendStatus(200);
   next();
 });
 
 const { detectLanguage, t }                         = require("./lib/lang");
-const { catalog, getProductById, getProductsByCategory, getCatalogText, getPrice } = require("./lib/catalog");
+const { catalog, products, categories, getProductById, getProductsByCategory, getCatalogText, getPrice } = require("./lib/catalog");
+const defaultProductsBackup = [...products];
 const { getSession, saveSession }                   = require("./lib/session");
 const { getAIReply }                                = require("./lib/claude");
 const { buildPaymentMessage, generateOrderId, generatePhonePeLink } = require("./lib/payment");
@@ -51,7 +52,180 @@ const FLOW_ADDRESS  = process.env.FLOW_ADDRESS_ID || process.env.FLOW_SHOPPING_I
 const FLOW_ADDRESS_SCREEN = process.env.FLOW_ADDRESS_SCREEN || "WELCOME";
 const { saveOrder, confirmOrder, cancelOrder, updateOrder, getAllOrders, getStats } = require("./lib/orders");
 const { getUser, saveUser, getUserAddress, getAllUsers } = require("./lib/users");
-const { markRead, sendText, sendImage, sendProductCard, sendMainMenu, sendCategoriesMenu, sendProductsMenu, sendButtons, sendListMenu, sendFlow, sendTemplate, sendCatalogLink, sendUrlButton } = require("./lib/whatsapp");
+const rawWhatsapp = require("./lib/whatsapp");
+const { markRead, sendProductCard, sendMainMenu, sendCategoriesMenu, sendProductsMenu, sendFlow, sendUrlButton } = rawWhatsapp;
+
+// Wrappers that automatically log to customer session messages list
+async function sendText(to, text, sender = "bot") {
+  const session = getSession(to);
+  session.messages = session.messages || [];
+  session.messages.push({ sender, text, timestamp: Date.now(), type: "text" });
+  return rawWhatsapp.sendText(to, text);
+}
+
+async function sendButtons(to, data, sender = "bot") {
+  const session = getSession(to);
+  session.messages = session.messages || [];
+  const text = `${data.bodyText}\n\nButtons: ${data.buttons.map(b => `[${b.title}]`).join(" ")}`;
+  session.messages.push({ sender, text, timestamp: Date.now(), type: "buttons" });
+  return rawWhatsapp.sendButtons(to, data);
+}
+
+async function sendListMenu(to, data, sender = "bot") {
+  const session = getSession(to);
+  session.messages = session.messages || [];
+  const sectionsText = data.sections.map(s => s.rows.map(r => `• ${r.title}`).join("\n")).join("\n");
+  const text = `${data.bodyText}\n\nOptions:\n${sectionsText}`;
+  session.messages.push({ sender, text, timestamp: Date.now(), type: "list" });
+  return rawWhatsapp.sendListMenu(to, data);
+}
+
+async function sendImage(to, url, caption, sender = "bot") {
+  const session = getSession(to);
+  session.messages = session.messages || [];
+  session.messages.push({ sender, text: `📷 Sent Image: ${caption || "Image"}`, timestamp: Date.now(), type: "image", media_url: url });
+  return rawWhatsapp.sendImage(to, url, caption);
+}
+
+async function sendTemplate(to, templateName, lang, components, sender = "bot") {
+  const session = getSession(to);
+  session.messages = session.messages || [];
+  session.messages.push({ sender, text: `📢 Broadcast Template Sent: ${templateName}`, timestamp: Date.now(), type: "template" });
+  return rawWhatsapp.sendTemplate(to, templateName, lang, components);
+}
+
+async function sendCatalogLink(to, lang, sender = "bot") {
+  const session = getSession(to);
+  session.messages = session.messages || [];
+  session.messages.push({ sender, text: `🛒 Sent Native Catalog Link`, timestamp: Date.now(), type: "catalog" });
+  return rawWhatsapp.sendCatalogLink(to, lang);
+}
+
+// ── Catalog Overrides & Settings Persistence ──────────────────────────────────
+const OVERRIDES_PATH = path.join(__dirname, "lib", "catalog_overrides.json");
+const CONFIG_PATH = path.join(__dirname, "lib", "catalog_config.json");
+
+function loadCatalogOverrides() {
+  try {
+    if (fs.existsSync(OVERRIDES_PATH)) {
+      const data = JSON.parse(fs.readFileSync(OVERRIDES_PATH, "utf8"));
+      data.forEach(overriddenProd => {
+        const idx = products.findIndex(p => p.id === overriddenProd.id);
+        if (idx !== -1) {
+          products[idx] = { ...products[idx], ...overriddenProd };
+        } else {
+          products.push(overriddenProd);
+        }
+      });
+      console.log(`Loaded ${data.length} product overrides.`);
+    }
+  } catch (err) {
+    console.error("Error loading catalog overrides:", err);
+  }
+}
+let currentFetchPromise = null;
+let lastCatalogFetchTime = 0;
+const CACHE_TTL_MS = 30 * 1000; // 30 seconds
+
+async function fetchCatalogFromMeta(force = false) {
+  const now = Date.now();
+  if (!force && (now - lastCatalogFetchTime < CACHE_TTL_MS)) {
+    return;
+  }
+
+  if (currentFetchPromise) {
+    return currentFetchPromise;
+  }
+
+  currentFetchPromise = (async () => {
+    let config = {};
+    try {
+      if (fs.existsSync(CONFIG_PATH)) {
+        config = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+      }
+    } catch (e) {
+      console.error("Failed to read config in fetchCatalogFromMeta:", e.message);
+    }
+
+    const catalogId = config.catalogId || process.env.META_CATALOG_ID;
+    const token = process.env.WHATSAPP_TOKEN;
+
+    if (!catalogId || !token) {
+      console.log("Meta Catalog config or token not found. Using local catalog defaults.");
+      return;
+    }
+
+    try {
+      console.log(`Fetching catalog products from Meta Catalog: ${catalogId}...`);
+      const res = await fetch(`https://graph.facebook.com/v19.0/${catalogId}/products?fields=id,retailer_id,name,description,image_url,price,currency,availability&limit=1000`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.error?.message || `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      if (data.data && Array.isArray(data.data)) {
+        const fetchedProducts = data.data.map(item => {
+          const id = item.retailer_id || item.id;
+          const original = defaultProductsBackup.find(p => p.id === id);
+
+          let priceNum = 0;
+          if (item.price) {
+            priceNum = parseFloat(String(item.price).replace(/[^\d.]/g, "")) || 0;
+          }
+
+          const category = original ? original.category : (id.startsWith("OIL") ? "oils" : id.startsWith("DAL") ? "dals" : id.startsWith("SWE") ? "sweets" : id.startsWith("MIL") ? "millets" : id.startsWith("FLO") ? "flours" : id.startsWith("SNA") ? "snacks" : id.startsWith("POH") ? "poha" : id.startsWith("SEE") ? "seeds" : id.startsWith("SPI") ? "spices" : id.startsWith("NOO") ? "noodles" : "other");
+          const emoji = original ? original.emoji : (category === "oils" ? "🫙" : category === "dals" ? "🫘" : category === "sweets" ? "🍬" : category === "millets" ? "🌾" : category === "flours" ? "🌾" : category === "snacks" ? "🍪" : category === "poha" ? "🍚" : category === "seeds" ? "🌱" : category === "spices" ? "🌶️" : category === "noodles" ? "🍜" : "🌾");
+
+          return {
+            id,
+            category,
+            emoji,
+            name: {
+              en: item.name,
+              hi: original?.name?.hi || item.name,
+              ta: original?.name?.ta || item.name,
+              te: original?.name?.te || item.name
+            },
+            desc: {
+              en: item.description || "",
+              hi: original?.desc?.hi || item.description || "",
+              ta: original?.desc?.ta || item.description || "",
+              te: original?.desc?.te || item.description || ""
+            },
+            mrp: Number(priceNum.toFixed(2)),
+            wholesale: Number((original ? (priceNum * (original.wholesale / original.mrp)) : (priceNum * 0.9)).toFixed(2)),
+            unit: original ? original.unit : "1 unit",
+            stock: item.availability === "in stock" ? 100 : 0,
+            image_url: item.image_url || original?.image_url || "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e5/Groundnut_oil.jpg/320px-Groundnut_oil.jpg"
+          };
+        });
+
+        if (fetchedProducts.length > 0) {
+          products.length = 0;
+          fetchedProducts.forEach(p => products.push(p));
+          loadCatalogOverrides(); // Re-apply local overrides
+          console.log(`Successfully fetched and loaded ${products.length} products from Meta Catalog!`);
+          lastCatalogFetchTime = Date.now();
+        }
+      }
+    } catch (err) {
+      console.error("Error fetching catalog from Meta:", err.message);
+    }
+  })();
+
+  try {
+    await currentFetchPromise;
+  } finally {
+    currentFetchPromise = null;
+  }
+}
+
+loadCatalogOverrides();
+fetchCatalogFromMeta(true).catch(err => console.error("Initial Meta catalog fetch failed:", err.message));
 
 const PORT         = process.env.PORT || 3000;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "phasalbazar2024";
@@ -164,14 +338,16 @@ function toFlowProductOption(product, customerType = "retail", lang = "en") {
 }
 
 // ── Flow Catalog API ─────────────────────────────────────────────────────────
-app.get("/flow/catalog/categories", (req, res) => {
+app.get("/flow/catalog/categories", async (req, res) => {
+  await fetchCatalogFromMeta();
   const lang = req.query.lang || "en";
   res.json({
     categories: catalog.categories.map(category => toFlowCategoryOption(category, lang)),
   });
 });
 
-app.get("/flow/catalog/products", (req, res) => {
+app.get("/flow/catalog/products", async (req, res) => {
+  await fetchCatalogFromMeta();
   const lang = req.query.lang || "en";
   const customerType = req.query.customerType === "wholesale" ? "wholesale" : "retail";
   const categoryId = req.query.category;
@@ -187,7 +363,8 @@ app.get("/flow/catalog/products", (req, res) => {
   });
 });
 
-app.get("/flow/catalog/flow-json", (req, res) => {
+app.get("/flow/catalog/flow-json", async (req, res) => {
+  await fetchCatalogFromMeta();
   const lang = req.query.lang || "en";
   const customerType = req.query.customerType === "wholesale" ? "wholesale" : "retail";
 
@@ -222,6 +399,15 @@ app.post("/admin/broadcast", adminAuth, async (req, res) => {
         if (useTemplate) {
           const isShopping = (templateName || "phasal_bazar_shopping") === "phasal_bazar_shopping";
           
+          // Read broadcastImageUrl from config for template header
+          let broadcastImageUrl = null;
+          try {
+            if (fs.existsSync(CONFIG_PATH)) {
+              const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+              broadcastImageUrl = cfg.broadcastImageUrl || null;
+            }
+          } catch (e) { /* ignore */ }
+
           let parameters = [];
           const uData = data && data[phone] || {};
           
@@ -231,6 +417,10 @@ app.post("/admin/broadcast", adminAuth, async (req, res) => {
               uData.order_id || "Order",
               uData.order_total || "0",
               uData.delivery_date || "soon"
+            ];
+          } else if (templateName === "phasal_bazar_welcome") {
+            parameters = [
+              uData.customer_name || "Customer"
             ];
           } else if (templateName === "phasal_bazar_order_delivered" || templateName === "phasal_bazar_order_cancelled") {
             parameters = [
@@ -249,7 +439,8 @@ app.post("/admin/broadcast", adminAuth, async (req, res) => {
           await sendTemplate(phone, templateName || "phasal_bazar_shopping", {
             hasQuickReply: isShopping,
             parameters: parameters,
-            language: "en"
+            language: "en",
+            headerImage: broadcastImageUrl
           });
         } else {
           // Use fillTemplate to replace variables in the template
@@ -315,6 +506,175 @@ app.patch("/admin/orders/:orderId", adminAuth, async (req, res) => {
   }
 });
 
+// ── Admin Catalog endpoints ───────────────────────────────────────────────────
+app.get("/admin/catalog", adminAuth, async (req, res) => {
+  await fetchCatalogFromMeta();
+  res.json({ products, categories });
+});
+
+app.post("/admin/catalog/refresh", adminAuth, async (req, res) => {
+  await fetchCatalogFromMeta(true);
+  res.json({ success: true, count: products.length });
+});
+
+app.put("/admin/catalog/products/:id", adminAuth, async (req, res) => {
+  const { id } = req.params;
+  const { name, desc, mrp, wholesale, unit, stock, image_url } = req.body;
+
+  const idx = products.findIndex(p => p.id === id);
+  if (idx === -1) {
+    return res.status(404).json({ error: "Product not found" });
+  }
+
+  const updatedProduct = {
+    ...products[idx],
+    name: typeof name === "object" ? name : { en: name, hi: name, ta: name, te: name },
+    desc: typeof desc === "object" ? desc : { en: desc, hi: desc, ta: desc, te: desc },
+    mrp: Number(Number(mrp).toFixed(2)),
+    wholesale: Number(Number(wholesale).toFixed(2)),
+    unit,
+    stock: Number(stock),
+    image_url
+  };
+  products[idx] = updatedProduct;
+
+  try {
+    let overrides = [];
+    if (fs.existsSync(OVERRIDES_PATH)) {
+      overrides = JSON.parse(fs.readFileSync(OVERRIDES_PATH, "utf8"));
+    }
+    const oIdx = overrides.findIndex(o => o.id === id);
+    if (oIdx !== -1) {
+      overrides[oIdx] = updatedProduct;
+    } else {
+      overrides.push(updatedProduct);
+    }
+    fs.writeFileSync(OVERRIDES_PATH, JSON.stringify(overrides, null, 2), "utf8");
+  } catch (err) {
+    console.error("Error persisting overrides:", err);
+  }
+
+  res.json({ success: true, product: updatedProduct });
+});
+
+app.get("/admin/catalog/config", adminAuth, (req, res) => {
+  let savedConfig = {};
+  try {
+    if (fs.existsSync(CONFIG_PATH)) {
+      savedConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+    }
+  } catch (err) {
+    console.error("Error reading catalog config:", err);
+  }
+  res.json({
+    catalogId: savedConfig.catalogId || process.env.META_CATALOG_ID || "",
+    brand: savedConfig.brand || "Phasal Bazar",
+    websiteUrl: savedConfig.websiteUrl || "https://wa.me/c/917771012123",
+    broadcastImageUrl: savedConfig.broadcastImageUrl || ""
+  });
+});
+
+app.put("/admin/catalog/config", adminAuth, (req, res) => {
+  try {
+    let existingConfig = {};
+    if (fs.existsSync(CONFIG_PATH)) {
+      existingConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+    }
+    const updated = { ...existingConfig, ...req.body };
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(updated, null, 2));
+    res.json({ success: true, config: updated });
+  } catch (err) {
+    console.error("Error saving catalog config:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/admin/catalog/sync", adminAuth, async (req, res) => {
+  const { catalogId, accessToken, brand, websiteUrl } = req.body;
+  
+  const finalCatalogId = catalogId || process.env.META_CATALOG_ID;
+  const finalToken = accessToken || process.env.WHATSAPP_TOKEN;
+  const finalBrand = brand || "Phasal Bazar";
+  const finalUrl = websiteUrl || "https://wa.me/c/917771012123";
+
+  if (!finalCatalogId) {
+    return res.status(400).json({ error: "Meta Catalog ID is required." });
+  }
+  if (!finalToken) {
+    return res.status(400).json({ error: "Meta WABA Token is required." });
+  }
+
+  try {
+    const batchRequests = products.map(p => {
+      return {
+        method: "UPDATE",
+        retailer_id: p.id,
+        data: {
+          title: p.name.en || p.name.hi || p.name.ta || p.name.te || "Product",
+          description: p.desc.en || p.desc.hi || p.desc.ta || p.desc.te || "Pure & Natural Product",
+          image_link: p.image_url || "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e5/Groundnut_oil.jpg/320px-Groundnut_oil.jpg",
+          price: `${p.mrp} INR`,
+          availability: p.stock > 0 ? "in stock" : "out of stock",
+          brand: finalBrand,
+          condition: "new",
+          link: `${finalUrl}?product_id=${p.id}`
+        }
+      };
+    });
+
+    const response = await fetch(`https://graph.facebook.com/v19.0/${finalCatalogId}/batch`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${finalToken}`
+      },
+      body: JSON.stringify({ requests: batchRequests })
+    });
+
+    const result = await response.json();
+    if (!response.ok) {
+      console.error("Meta Catalog sync error response:", result);
+      return res.status(response.status).json({
+        error: result.error?.message || "Failed to sync with Meta Catalog",
+        details: result
+      });
+    }
+
+    try {
+      const existingCfg = fs.existsSync(CONFIG_PATH) ? JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")) : {};
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify({ catalogId: finalCatalogId, brand: finalBrand, websiteUrl: finalUrl, broadcastImageUrl: existingCfg.broadcastImageUrl || "" }, null, 2));
+    } catch (e) {
+      console.error("Failed to write config:", e.message);
+    }
+
+    res.json({ success: true, result });
+  } catch (err) {
+    console.error("Meta Catalog sync exception:", err);
+    res.status(500).json({ error: "Internal Server Error during Meta Catalog sync", details: err.message });
+  }
+});
+
+// ── Admin Chat endpoints ──────────────────────────────────────────────────────
+app.get("/admin/chat/:phone", adminAuth, (req, res) => {
+  const { phone } = req.params;
+  const session = getSession(phone);
+  res.json({ messages: session.messages || [] });
+});
+
+app.post("/admin/send-message", adminAuth, async (req, res) => {
+  const { to, text } = req.body;
+  if (!to || !text) {
+    return res.status(400).json({ error: "Missing 'to' or 'text' parameters" });
+  }
+  try {
+    await sendText(to, text, "admin");
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Error sending admin message:", err);
+    res.status(500).json({ error: "Failed to send WhatsApp message" });
+  }
+});
+
 // Utility: Replace {{var}} in template with values from data object
 function fillTemplate(template, data) {
   return template.replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (m, key) =>
@@ -341,12 +701,33 @@ app.post("/webhook", async (req, res) => {
     }
     if (!value?.messages) return;
 
+    // Fetch catalog dynamically from Meta Catalog to ensure we always use the updated one
+    await fetchCatalogFromMeta();
+
     const msg     = value.messages[0];
+    console.log("Incoming message:", JSON.stringify(msg, null, 2));
     const from    = msg.from;
     const msgType = msg.type;
 
     await markRead(msg.id);
     const session = getSession(from);
+    session.messages = session.messages || [];
+
+    if (msgType === "text") {
+      session.messages.push({ sender: "user", text: msg.text?.body || "", timestamp: Date.now(), type: "text" });
+    } else if (msgType === "interactive") {
+      const r = msg.interactive;
+      const title = r?.list_reply?.title || r?.button_reply?.title || "Clicked option";
+      session.messages.push({ sender: "user", text: `Interactive: ${title}`, timestamp: Date.now(), type: "interactive" });
+    } else if (msgType === "button") {
+      session.messages.push({ sender: "user", text: `Clicked button: ${msg.button?.text || ""}`, timestamp: Date.now(), type: "button" });
+    } else if (msgType === "image") {
+      session.messages.push({ sender: "user", text: "📷 Image message (Payment screenshot)", timestamp: Date.now(), type: "image" });
+    } else if (msgType === "order") {
+      session.messages.push({ sender: "user", text: "🛒 Catalog order received", timestamp: Date.now(), type: "order" });
+    } else {
+      session.messages.push({ sender: "user", text: `Sent ${msgType} message`, timestamp: Date.now(), type: msgType });
+    }
 
     if (msgType === "interactive" && msg.interactive?.type === "nfm_reply") {
       await handleFlowResponse(from, session, msg.interactive.nfm_reply);
@@ -400,6 +781,13 @@ async function sendLanguageMenu(from) {
 async function handleTextMessage(from, session, text) {
   const { lang = "en" } = session;
   const lower = text.trim().toLowerCase();
+
+  if (lower === "explore catalog" || lower === "explore_catalog" || lower === "view catalog" || lower === "open catalog") {
+    const chosenLang = session.lang || "en";
+    saveSession(from, { state: "browsing", lang: chosenLang, customerType: session.customerType || "retail" });
+    await sendCatalogLink(from, chosenLang);
+    return;
+  }
 
   // ── PRIORITY 1: Active order states (NEVER interrupted by greetings) ────────
 
@@ -535,9 +923,9 @@ async function handleTextMessage(from, session, text) {
   const isNewCustomer = !session.lang || session.state === "new";
 
   if (isGreeting || isNewCustomer) {
-    // Send welcome + main menu exactly like old bot
-    saveSession(from, { state: "browsing", lang: lang || "en", customerType: session.customerType || "retail", messages: [] });
-    await sendMainMenu(from, lang || "en", k => t(lang || "en", k));
+    // Send welcome + main menu exactly like old bot, defaulting to English first
+    saveSession(from, { state: "browsing", lang: "en", customerType: session.customerType || "retail", messages: [] });
+    await sendMainMenu(from, "en", k => t("en", k));
     return;
   }
 
@@ -558,10 +946,21 @@ async function handleTextMessage(from, session, text) {
 // ── Interactive reply handler ─────────────────────────────────────────────────
 async function handleInteractiveReply(from, session, replyId, replyTitle) {
 
-  if (replyId === "START_SHOPPING") {
+  const idLower = (replyId || "").toLowerCase().trim();
+  const titleLower = (replyTitle || "").toLowerCase().trim();
+
+  if (
+    idLower === "start_shopping" ||
+    idLower === "explore_catalog" ||
+    idLower === "explore catalog" ||
+    titleLower === "explore catalog" ||
+    titleLower === "explore_catalog" ||
+    titleLower === "explore catalogue"
+  ) {
     const chosenLang = session.lang || "en";
     saveSession(from, { state: "browsing", lang: chosenLang, customerType: session.customerType || "retail" });
-    await sendMainMenu(from, chosenLang, k => t(chosenLang, k));
+    // Send native WhatsApp catalog page so customer can browse products directly
+    await sendCatalogLink(from, chosenLang);
     return;
   }
 

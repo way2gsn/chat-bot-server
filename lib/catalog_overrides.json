@@ -1,0 +1,24 @@
+[
+  {
+    "id": "DAL001",
+    "category": "dals",
+    "emoji": "🫘",
+    "name": {
+      "en": "Arhar Dal (1Kg)",
+      "hi": "Arhar Dal (1Kg)",
+      "ta": "Arhar Dal (1Kg)",
+      "te": "Arhar Dal (1Kg)"
+    },
+    "desc": {
+      "en": "1kg | Natural & Pure",
+      "hi": "1kg | प्राकृतिक",
+      "ta": "1kg | இயற்கையானது",
+      "te": "1kg | సహజమైనది"
+    },
+    "mrp": 134,
+    "wholesale": 128.31,
+    "unit": "1kg",
+    "stock": 100,
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7a/Pulses.jpg/320px-Pulses.jpg"
+  }
+]
