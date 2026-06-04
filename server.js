@@ -131,14 +131,19 @@ app.get("/flow/catalog/flow-json", (req, res) => {
 // ── Broadcast API ─────────────────────────────────────────────────────────────
 app.post("/admin/broadcast", adminAuth, async (req, res) => {
   try {
-    const { phones, template, data } = req.body;
-    if (!Array.isArray(phones) || !template) return res.status(400).json({ error: "Missing phones or template" });
+    const { phones, template, data, useTemplate, templateName } = req.body;
+    if (!Array.isArray(phones)) return res.status(400).json({ error: "Missing phones" });
+    if (!useTemplate && !template) return res.status(400).json({ error: "Missing template" });
     const results = { sent: 0, failed: 0, errors: [] };
     for (const phone of phones) {
       try {
-        // Use fillTemplate to replace variables in the template
-        const message = fillTemplate(template, typeof data === 'object' && data[phone] ? data[phone] : data || {});
-        await sendText(phone, message);
+        if (useTemplate) {
+          await sendFlowTemplate(phone, { templateName: templateName || "phasal_bazar_shopping", language: "en" });
+        } else {
+          // Use fillTemplate to replace variables in the template
+          const message = fillTemplate(template, typeof data === 'object' && data[phone] ? data[phone] : data || {});
+          await sendText(phone, message);
+        }
         results.sent++;
         await new Promise(r => setTimeout(r, 500));
       } catch (err) {
