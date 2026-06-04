@@ -281,6 +281,12 @@ app.post("/webhook", async (req, res) => {
       await handleInteractiveReply(from, session, id, title);
       return;
     }
+    if (msgType === "button") {
+      const payload = msg.button?.payload || "";
+      const title   = msg.button?.text    || "";
+      await handleInteractiveReply(from, session, payload, title);
+      return;
+    }
     if (msgType === "text")  { await handleTextMessage(from, session, msg.text.body.trim()); return; }
     // WhatsApp native catalog order
     if (msgType === "order") {
