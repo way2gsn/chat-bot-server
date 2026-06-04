@@ -172,8 +172,34 @@ app.post("/admin/broadcast", adminAuth, async (req, res) => {
 
         if (useTemplate) {
           const isShopping = (templateName || "phasal_bazar_shopping") === "phasal_bazar_shopping";
+          
+          let parameters = [];
+          const uData = data && data[phone] || {};
+          
+          if (templateName === "phasal_bazar_order_confirmed") {
+            parameters = [
+              uData.customer_name || "Customer",
+              uData.order_id || "Order",
+              uData.order_total || "0",
+              uData.delivery_date || "soon"
+            ];
+          } else if (templateName === "phasal_bazar_order_delivered" || templateName === "phasal_bazar_order_cancelled") {
+            parameters = [
+              uData.customer_name || "Customer",
+              uData.order_id || "Order"
+            ];
+          } else if (templateName === "phasal_bazar_payment_request") {
+            parameters = [
+              uData.customer_name || "Customer",
+              uData.order_id || "Order",
+              uData.order_total || "0",
+              uData.link || ""
+            ];
+          }
+
           await sendTemplate(phone, templateName || "phasal_bazar_shopping", {
             hasQuickReply: isShopping,
+            parameters: parameters,
             language: "en"
           });
         } else {
