@@ -930,12 +930,20 @@ async function sendAddressStartPrompt(from, session) {
   const total = pendingOrder?.total || 0;
   const savedAddress = await getUserAddress(from);
 
+  let itemsSummary = "";
+  if (pendingOrder && pendingOrder.items) {
+    itemsSummary = pendingOrder.items.map(i => `${i.emoji || "🌾"} ${i.name} x${i.qty} = Rs.${i.subtotal.toFixed(2)}`).join("\n") + "\n\n";
+  } else if (pendingOrder && pendingOrder.cartItem) {
+    const i = pendingOrder.cartItem;
+    itemsSummary = `${i.emoji || "🌾"} ${i.name} x${i.qty} = Rs.${i.subtotal.toFixed(2)}\n\n`;
+  }
+
   if (savedAddress) {
     const msg = {
-      en: `🛒 *Order Received!*\n\n💰 *Total: ₹${total.toFixed ? total.toFixed(2) : total}*\n\n📍 *Saved Address:*\n_${savedAddress}_\n\nWould you like to use this address or enter a new one?`,
-      hi: `🛒 *Order Mila!*\n\n💰 *Total: ₹${total.toFixed ? total.toFixed(2) : total}*\n\n📍 *Saved Address mila:*\n_${savedAddress}_\n\nKya aap isi address par delivery chahte hain ya naya address dena chahte hain?`,
-      ta: `🛒 *ஆர்டர் கிடைத்தது!*\n\n💰 *மொத்தம்: ₹${total.toFixed ? total.toFixed(2) : total}*\n\n📍 *சேமிக்கப்பட்ட முகவரி:*\n_${savedAddress}_\n\nஇதை பயன்படுத்த விரும்புகிறீர்களா அல்லது புதிய முகவரியை உள்ளிட விரும்புகிறீர்களா?`,
-      te: `🛒 *ఆర్డర్ అందింది!*\n\n💰 *మొత్తం: ₹${total.toFixed ? total.toFixed(2) : total}*\n\n📍 *సేవ్ చేసిన చిరునామా:*\n_${savedAddress}_\n\nమీరు ఈ చిరునామాను ఉపయోగించాలనుకుంటున్నారా లేదా కొత్త చిరునామాను నమోదు చేయాలనుకుంటున్నారా?`,
+      en: `🛒 *Order Received!*\n\n${itemsSummary}💰 *Total: ₹${total.toFixed(2)}*\n\n📍 *Saved Address:*\n_${savedAddress}_\n\nWould you like to use this address or enter a new one?`,
+      hi: `🛒 *Order Mila!*\n\n${itemsSummary}💰 *Total: ₹${total.toFixed(2)}*\n\n📍 *Saved Address mila:*\n_${savedAddress}_\n\nKya aap isi address par delivery chahte hain ya naya address dena chahte hain?`,
+      ta: `🛒 *ஆர்டர் கிடைத்தது!*\n\n${itemsSummary}💰 *மொத்தம்: ₹${total.toFixed(2)}*\n\n📍 *சேமிக்கப்பட்ட முகவரி:*\n_${savedAddress}_\n\nஇதை பயன்படுத்த விரும்புகிறீர்களா அல்லது புதிய முகவரியை உள்ளிட விரும்புகிறீர்களா?`,
+      te: `🛒 *ఆర్డర్ అందింది!*\n\n${itemsSummary}💰 *మొత్తం: ₹${total.toFixed(2)}*\n\n📍 *సేవ్ చేసిన చిరునామా:*\n_${savedAddress}_\n\nమీరు ఈ చిరునామాను ఉపయోగించాలనుకుంటున్నారా లేదా కొత్త చిరునామాను నమోదు చేయాలనుకుంటున్నారా?`,
     };
     saveSession(from, { state: "awaiting_saved_address_choice" });
     await sendButtons(from, {
@@ -948,10 +956,10 @@ async function sendAddressStartPrompt(from, session) {
     });
   } else {
     const msg = {
-      en: `🛒 *Order Received!*\n\n💰 *Total: ₹${total.toFixed ? total.toFixed(2) : total}*\n\nTap below to provide your delivery details.`,
-      hi: `🛒 *Order Mila!*\n\n💰 *Total: ₹${total.toFixed ? total.toFixed(2) : total}*\n\nApni delivery details dene ke liye neeche tap karein.`,
-      ta: `🛒 *ஆர்டர் கிடைத்தது!*\n\n💰 *மொத்தம்: ₹${total.toFixed ? total.toFixed(2) : total}*\n\nடெலிவரி விவரங்களை வழங்க கீழே தட்டவும்.`,
-      te: `🛒 *ఆర్డర్ అందింది!*\n\n💰 *మొత్తం: ₹${total.toFixed ? total.toFixed(2) : total}*\n\nడెలివరీ వివరాలు ఇవ్వడానికి కింద నొక్కండి.`,
+      en: `🛒 *Order Received!*\n\n${itemsSummary}💰 *Total: ₹${total.toFixed(2)}*\n\nTap below to provide your delivery details.`,
+      hi: `🛒 *Order Mila!*\n\n${itemsSummary}💰 *Total: ₹${total.toFixed(2)}*\n\nApni delivery details dene ke liye neeche tap karein.`,
+      ta: `🛒 *ஆர்டர் கிடைத்தது!*\n\n${itemsSummary}💰 *மொத்தம்: ₹${total.toFixed(2)}*\n\nடெலிவரி விவரங்களை வழங்க கீழே தட்டவும்.`,
+      te: `🛒 *ఆర్డర్ అందింది!*\n\n${itemsSummary}💰 *మొత్తం: ₹${total.toFixed(2)}*\n\nడెలివరీ వివరాలు ఇవ్వడానికి కింద నొక్కండి.`,
     };
     saveSession(from, { state: "awaiting_address_start" });
     await sendButtons(from, {
@@ -1452,50 +1460,17 @@ async function handleCatalogOrder(from, session, order) {
   const orderId = generateOrderId();
 
   // Save to session for address collection
+  const pendingOrder = { orderId, items, total, cartItem: items[0] };
   saveSession(from, {
     state:        "awaiting_address_start",
     chosenPayment: "COD",
-    pendingOrder:  { orderId, items, total, cartItem: items[0] },
+    pendingOrder,
   });
 
-  // Show order summary
-  const itemsList = items.map(i => `${i.emoji} ${i.name} x${i.qty} = Rs.${i.subtotal.toFixed(2)}`).join("\n");
-  const msg = {
-    en: `🛒 *Order Received!*
-
-${itemsList}
-
-💰 *Total: ₹${total.toFixed(2)}*
-
-📍 Next, tap below to enter your *delivery address* in the native form.`,
-    hi: `🛒 *Order Mila!*
-
-${itemsList}
-
-💰 *Total: ₹${total.toFixed(2)}*
-
-📍 Ab neeche tap karke apna *delivery address* native form mein bharein.`,
-    ta: `🛒 *ஆர்டர் கிடைத்தது!*
-
-${itemsList}
-
-💰 *மொத்தம்: ₹${total.toFixed(2)}*
-
-📍 கீழே தட்டி native form-ல் முகவரியை உள்ளிடவும்.`,
-    te: `🛒 *ఆర్డర్ అందింది!*
-
-${itemsList}
-
-💰 *మొత్తం: ₹${total.toFixed(2)}*
-
-📍 ఇప్పుడు కింద నొక్కి native form లో డెలివరీ చిరునామా ఇవ్వండి.`,
-  };
-  await sendButtons(from, {
-    bodyText: msg[lang] || msg.en,
-    buttons: [
-      { id: "start_address", title: "Enter Address" },
-      { id: "pay_cancel",    title: "Cancel Order" },
-    ],
+  await sendAddressStartPrompt(from, {
+    ...session,
+    lang,
+    pendingOrder,
   });
 }
 
