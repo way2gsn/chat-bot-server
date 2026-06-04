@@ -162,6 +162,14 @@ app.post("/admin/broadcast", adminAuth, async (req, res) => {
     const results = { sent: 0, failed: 0, errors: [] };
     for (const phone of phones) {
       try {
+        // Save the phone number and name to the users database so it's persisted
+        const customerName = data && data[phone] && data[phone].customer_name || "";
+        try {
+          await saveUser(phone, { name: customerName || undefined });
+        } catch (dbErr) {
+          console.warn(`Failed to save broadcast user ${phone}:`, dbErr.message);
+        }
+
         if (useTemplate) {
           const isShopping = (templateName || "phasal_bazar_shopping") === "phasal_bazar_shopping";
           await sendTemplate(phone, templateName || "phasal_bazar_shopping", {
@@ -1034,6 +1042,7 @@ async function placeConfirmedOrder(from, session) {
   await saveOrder({
     orderId,
     customerPhone: from,
+    customerName: session.customerName || null,
     items,
     total,
     paymentMethod: chosenPayment,
@@ -1096,7 +1105,7 @@ async function handleUPIPayment(from, session) {
   const { lang, pendingOrder } = session;
   if (!pendingOrder) { await sendText(from, "No pending order."); return; }
   const { orderId, cartItem, total } = pendingOrder;
-  await saveOrder({ orderId, customerPhone: from, items: [cartItem], total, paymentMethod: "UPI", lang });
+  await saveOrder({ orderId, customerPhone: from, customerName: session.customerName || null, items: [cartItem], total, paymentMethod: "UPI", lang });
   saveSession(from, { state: "awaiting_payment" });
   await sendText(from, buildPaymentMessage({ lang, items: [cartItem], total, orderId }));
   const msg = { en: "📸 Send payment screenshot to confirm your order.", hi: "📸 Screenshot bhejein order confirm karne ke liye.", ta: "📸 Screenshot anupungal.", te: "📸 Screenshot pamandi." };
@@ -1109,7 +1118,7 @@ async function handleCODPayment(from, session) {
   if (!pendingOrder) { await sendText(from, "No pending order."); return; }
   const { orderId, cartItem, total } = pendingOrder;
   const items = pendingOrder.items || [cartItem];
-  await saveOrder({ orderId, customerPhone: from, items, total, paymentMethod: "COD", lang });
+  await saveOrder({ orderId, customerPhone: from, customerName: session.customerName || null, items, total, paymentMethod: "COD", lang });
   saveSession(from, { state: "idle", cart: [], pendingOrder: null });
   const itemLines = items.map(item => `${item.emoji} ${item.name} × ${item.qty}`).join("\n");
   const msg = {
@@ -1216,6 +1225,7 @@ async function handleFlowResponse(from, session, nfmReply) {
     await saveOrder({
       orderId,
       customerPhone: from,
+      customerName: data.customer_name || null,
       items: [{ name: data.order_details, qty: 1, subtotal: 0, emoji: "🌾" }],
       total: 0,
       paymentMethod,
