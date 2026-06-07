@@ -723,6 +723,13 @@ app.post("/webhook", async (req, res) => {
     const from    = msg.from;
     const msgType = msg.type;
 
+    // Update user's last interaction time in database for the 24-hour window
+    try {
+      await saveUser(from, {});
+    } catch (dbErr) {
+      console.warn(`Failed to update last interaction time for ${from}:`, dbErr.message);
+    }
+
     await markRead(msg.id);
     const session = getSession(from);
     session.messages = session.messages || [];
