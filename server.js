@@ -534,7 +534,7 @@ app.get("/flow/catalog/flow-json", async (req, res) => {
 // ── Broadcast API ─────────────────────────────────────────────────────────────
 app.post("/admin/broadcast", adminAuth, async (req, res) => {
   try {
-    const { phones, template, data, useTemplate, templateName, headerImage } = req.body;
+    const { phones, template, data, useTemplate, templateName, templateLanguage, headerImage } = req.body;
     if (!Array.isArray(phones)) return res.status(400).json({ error: "Missing phones" });
     if (!useTemplate && !template) return res.status(400).json({ error: "Missing template" });
     const results = { sent: 0, failed: 0, errors: [] };
@@ -593,7 +593,7 @@ app.post("/admin/broadcast", adminAuth, async (req, res) => {
           await sendTemplate(phone, templateName || "phasal_bazar_shopping", {
             hasQuickReply: isShopping,
             parameters: parameters,
-            language: "en",
+            language: templateLanguage || "en",
             headerImage: broadcastImageUrl
           });
         } else {
