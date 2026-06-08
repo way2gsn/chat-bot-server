@@ -26,10 +26,8 @@ try {
 
 const express = require("express");
 const app = express();
-app.use(express.json());
-app.use(express.static(path.join(__dirname)));
 
-// CORS for React dashboard
+// CORS for React dashboard (Must be first to handle errors with CORS headers)
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", process.env.DASHBOARD_URL || "*");
   res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -37,6 +35,10 @@ app.use((req, res, next) => {
   if (req.method === "OPTIONS") return res.sendStatus(200);
   next();
 });
+
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
+app.use(express.static(path.join(__dirname)));
 
 const { detectLanguage, t }                         = require("./lib/lang");
 const { catalog, products, categories, getProductById, getProductsByCategory, getCatalogText, getPrice } = require("./lib/catalog");
@@ -87,11 +89,20 @@ async function sendImage(to, url, caption, sender = "bot") {
   return rawWhatsapp.sendImage(to, url, caption);
 }
 
-async function sendTemplate(to, templateName, lang, components, sender = "bot") {
+async function sendTemplate(to, templateName, langOrOpts, componentsOrParams, sender = "bot") {
   const session = getSession(to);
   session.messages = session.messages || [];
   session.messages.push({ sender, text: `📢 Broadcast Template Sent: ${templateName}`, timestamp: Date.now(), type: "template" });
-  return rawWhatsapp.sendTemplate(to, templateName, lang, components);
+
+  if (typeof langOrOpts === "object" && langOrOpts !== null) {
+    return rawWhatsapp.sendTemplate(to, templateName, langOrOpts);
+  } else {
+    const opts = {
+      language: langOrOpts || "en",
+      parameters: Array.isArray(componentsOrParams) ? componentsOrParams : []
+    };
+    return rawWhatsapp.sendTemplate(to, templateName, opts);
+  }
 }
 
 async function sendCatalogLink(to, lang, sender = "bot") {
@@ -311,11 +322,138 @@ app.get("/admin/orders", adminAuth, async (req, res) => {
 
 app.get("/admin/users", adminAuth, async (req, res) => {
   try {
-    res.json(await getAllUsers());
+    const dbUsers = await getAllUsers();
+    const enriched = dbUsers.map(u => {
+      const session = getSession(u.phone);
+      const coolOff = session.coolOffUntil && session.coolOffUntil > Date.now() ? session.coolOffUntil : null;
+      return {
+        ...u,
+        coolOffUntil: coolOff
+      };
+    });
+    res.json(enriched);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Dynamic WhatsApp templates sync from Meta Graph API
+app.get("/admin/templates", adminAuth, async (req, res) => {
+  try {
+    const token = process.env.WHATSAPP_TOKEN;
+    const phoneId = process.env.WHATSAPP_PHONE_ID;
+
+    if (!token || !phoneId) {
+      return res.status(400).json({ error: "Missing WHATSAPP_TOKEN or WHATSAPP_PHONE_ID in server environment." });
+    }
+
+    let wabaId = "";
+
+    // 1. Try reading WABA ID from config file first
+    if (fs.existsSync(CONFIG_PATH)) {
+      try {
+        const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+        wabaId = cfg.wabaId || "";
+      } catch (e) {
+        console.error("Error reading CONFIG_PATH in templates route:", e);
+      }
+    }
+
+    // 2. Fallback to env variable
+    if (!wabaId) {
+      wabaId = process.env.WHATSAPP_WABA_ID || "";
+    }
+
+    // 3. Fallback to looking up from Phone ID via Meta Graph API
+    if (!wabaId) {
+      try {
+        const phoneRes = await fetch(`https://graph.facebook.com/v19.0/${phoneId}?fields=whatsapp_business_account`, {
+          headers: { "Authorization": `Bearer ${token}` }
+        });
+
+        if (phoneRes.ok) {
+          const phoneData = await phoneRes.json();
+          wabaId = phoneData.whatsapp_business_account?.id || "";
+        } else {
+          const errData = await phoneRes.json();
+          console.warn("WABA ID lookup failed from API:", errData.error?.message);
+        }
+      } catch (err) {
+        console.warn("WABA ID lookup from Phone ID threw error:", err.message);
+      }
+    }
+
+    if (!wabaId) {
+      return res.status(400).json({ success: false, error: "WABA_ID_MISSING" });
+    }
+
+    // 4. Fetch message templates
+    const templatesRes = await fetch(`https://graph.facebook.com/v19.0/${wabaId}/message_templates?limit=100`, {
+      headers: { "Authorization": `Bearer ${token}` }
+    });
+
+    if (!templatesRes.ok) {
+      const errData = await templatesRes.json();
+      throw new Error(errData.error?.message || `Failed to fetch templates: HTTP ${templatesRes.status}`);
+    }
+
+    const templatesData = await templatesRes.json();
+    res.json({
+      success: true,
+      templates: templatesData.data || []
+    });
+  } catch (err) {
+    console.error("Error fetching templates from Meta Graph API:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});// Image upload endpoint (accepts base64)
+app.post("/admin/upload-image", adminAuth, (req, res) => {
+  try {
+    const { base64 } = req.body;
+    if (!base64) {
+      return res.status(400).json({ error: "Missing base64 data" });
+    }
+
+    // Clean up base64 prefix if present (e.g. data:image/png;base64,)
+    const matches = base64.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+    let dataBuffer;
+    let extension = "jpg";
+
+    if (matches && matches.length === 3) {
+      extension = matches[1].split("/")[1] || "jpg";
+      dataBuffer = Buffer.from(matches[2], "base64");
+    } else {
+      dataBuffer = Buffer.from(base64, "base64");
+    }
+
+    // Reject images larger than 5MB (WhatsApp limit)
+    if (dataBuffer.length > 5 * 1024 * 1024) {
+      return res.status(400).json({ error: "Image file exceeds WhatsApp's 5MB limit. Please upload a smaller or compressed image." });
+    }
+
+    // Ensure uploads directory exists
+    const uploadsDir = path.join(__dirname, "uploads");
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir);
+    }
+
+    const uniqueFilename = `img_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${extension}`;
+    const filePath = path.join(uploadsDir, uniqueFilename);
+
+    fs.writeFileSync(filePath, dataBuffer);
+
+    // Build the public URL (using host header dynamically)
+    const host = req.get("host");
+    const protocol = req.protocol;
+    const url = `${protocol}://${host}/uploads/${uniqueFilename}`;
+
+    res.json({ success: true, url });
+  } catch (err) {
+    console.error("Error uploading image:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 app.post("/admin/users/import", adminAuth, async (req, res) => {
   try {
@@ -396,7 +534,7 @@ app.get("/flow/catalog/flow-json", async (req, res) => {
 // ── Broadcast API ─────────────────────────────────────────────────────────────
 app.post("/admin/broadcast", adminAuth, async (req, res) => {
   try {
-    const { phones, template, data, useTemplate, templateName } = req.body;
+    const { phones, template, data, useTemplate, templateName, headerImage } = req.body;
     if (!Array.isArray(phones)) return res.status(400).json({ error: "Missing phones" });
     if (!useTemplate && !template) return res.status(400).json({ error: "Missing template" });
     const results = { sent: 0, failed: 0, errors: [] };
@@ -413,14 +551,16 @@ app.post("/admin/broadcast", adminAuth, async (req, res) => {
         if (useTemplate) {
           const isShopping = (templateName || "phasal_bazar_shopping") === "phasal_bazar_shopping";
           
-          // Read broadcastImageUrl from config for template header
-          let broadcastImageUrl = null;
-          try {
-            if (fs.existsSync(CONFIG_PATH)) {
-              const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
-              broadcastImageUrl = cfg.broadcastImageUrl || null;
-            }
-          } catch (e) { /* ignore */ }
+          // Use the custom headerImage passed from request, fallback to config
+          let broadcastImageUrl = headerImage || null;
+          if (!broadcastImageUrl) {
+            try {
+              if (fs.existsSync(CONFIG_PATH)) {
+                const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+                broadcastImageUrl = cfg.broadcastImageUrl || null;
+              }
+            } catch (e) { /* ignore */ }
+          }
 
           let parameters = [];
           const uData = data && data[phone] || {};
@@ -466,6 +606,18 @@ app.post("/admin/broadcast", adminAuth, async (req, res) => {
       } catch (err) {
         results.failed++;
         results.errors.push({ phone, error: err.message });
+        try {
+          const session = getSession(phone);
+          session.messages = session.messages || [];
+          session.messages.push({
+            sender: "system",
+            text: `Failed to send broadcast: ${err.message}`,
+            timestamp: Date.now(),
+            type: "system_error"
+          });
+        } catch (e) {
+          console.error("Failed to write sync error to session:", e.message);
+        }
       }
     }
     res.json(results);
@@ -582,6 +734,7 @@ app.get("/admin/catalog/config", adminAuth, (req, res) => {
   }
   res.json({
     catalogId: savedConfig.catalogId || process.env.META_CATALOG_ID || "",
+    wabaId: savedConfig.wabaId || process.env.WHATSAPP_WABA_ID || "",
     brand: savedConfig.brand || "Phasal Bazar",
     websiteUrl: savedConfig.websiteUrl || "https://wa.me/c/917771012123",
     broadcastImageUrl: savedConfig.broadcastImageUrl || ""
@@ -712,6 +865,32 @@ app.post("/webhook", async (req, res) => {
     const value = req.body?.entry?.[0]?.changes?.[0]?.value;
     if (value?.statuses) {
       console.log("ℹ️ Webhook status update received:", JSON.stringify(value.statuses, null, 2));
+      for (const status of value.statuses) {
+        if (status.status === "failed" && status.recipient_id) {
+          try {
+            const session = getSession(status.recipient_id);
+            session.messages = session.messages || [];
+            
+            const err = status.errors?.[0];
+            const errorMsg = err?.error_data?.details || err?.message || "Delivery failed";
+            const errorCode = err?.code ? ` (Code ${err.code})` : "";
+            
+            if (err?.code === 131049) {
+              // Set cool-off period for 24 hours
+              session.coolOffUntil = Date.now() + 24 * 60 * 60 * 1000;
+            }
+            
+            session.messages.push({
+              sender: "system",
+              text: `Delivery failed: ${errorMsg}${errorCode}`,
+              timestamp: parseInt(status.timestamp) * 1000 || Date.now(),
+              type: "system_error"
+            });
+          } catch (e) {
+            console.error("Error pushing status error to session:", e.message);
+          }
+        }
+      }
     }
     if (!value?.messages) return;
 
@@ -1940,5 +2119,14 @@ async function handleNativeOrder(from, session, order) {
     ],
   });
 }
+
+// Global error handler for body parsing errors and other middleware failures
+app.use((err, req, res, next) => {
+  if (err.type === "entity.too.large" || err.status === 413) {
+    return res.status(413).json({ error: "Image too large. Please upload an image smaller than 50MB." });
+  }
+  console.error("Server error:", err);
+  res.status(err.status || 500).json({ error: err.message || "Internal server error" });
+});
 
 app.listen(PORT, () => console.log(`🌾 Phasal Bazar Bot running on port ${PORT}`));
