@@ -52,8 +52,8 @@ const FLOW_SHOPPING = process.env.FLOW_SHOPPING_ID || "1926551408029255";
 const FLOW_SUPPORT  = process.env.FLOW_SUPPORT_ID  || "1933182807315833";
 const FLOW_ADDRESS  = process.env.FLOW_ADDRESS_ID || process.env.FLOW_SHOPPING_ID || "";
 const FLOW_ADDRESS_SCREEN = process.env.FLOW_ADDRESS_SCREEN || "WELCOME";
-const { saveOrder, confirmOrder, cancelOrder, updateOrder, getAllOrders, getStats } = require("./lib/orders");
-const { getUser, saveUser, getUserAddress, getAllUsers, importUsers } = require("./lib/users");
+const { saveOrder, confirmOrder, cancelOrder, updateOrder, getAllOrders, getStats, deleteOrder } = require("./lib/orders");
+const { getUser, saveUser, getUserAddress, getAllUsers, importUsers, deleteUser } = require("./lib/users");
 const rawWhatsapp = require("./lib/whatsapp");
 const { markRead, sendProductCard, sendMainMenu, sendCategoriesMenu, sendProductsMenu, sendFlow, sendUrlButton } = rawWhatsapp;
 
@@ -666,6 +666,27 @@ app.patch("/admin/orders/:orderId", adminAuth, async (req, res) => {
       console.error("Failed to send automated status template:", err.message);
     }
 
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/admin/orders/:orderId", adminAuth, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    await deleteOrder(orderId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/admin/users/:phone", adminAuth, async (req, res) => {
+  try {
+    const { phone } = req.params;
+    const decodedPhone = decodeURIComponent(phone);
+    await deleteUser(decodedPhone);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
